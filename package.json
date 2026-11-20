@@ -1,0 +1,23 @@
+{
+  "name": "privoperps",
+  "version": "1.0.0",
+  "description": "PRIVO on Robinhood Chain: Block desk contract and the client libraries for Uniswap spot, Orderly perps and sealed OTC quotes.",
+  "type": "module",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/privoexchange/privoperps.git" },
+  "keywords": ["robinhood-chain", "orderly", "uniswap", "perps", "otc", "eip-712", "stock-tokens"],
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node test/sim/journal-test.mjs && node test/sim/perps-trade-test.mjs",
+    "test:desk": "node test/blockdesk/desk-test.mjs && node test/blockdesk/ui-core-test.mjs && node test/blockdesk/deploy-test.mjs",
+    "test:chain": "node test/sim/livetest.mjs && node test/sim/perpstest.mjs",
+    "compile": "node test/blockdesk/compile.mjs"
+  },
+  "dependencies": {
+    "@noble/ed25519": "2.1.0",
+    "viem": "2.21.54"
+  },
+  "devDependencies": {
+    "solc": "0.8.26"
+  }
+}
