@@ -3,7 +3,7 @@
 // from the maker against the real contract address.
 import { createPublicClient, http, encodeFunctionData, parseAbi, pad, toHex, parseUnits } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { DESK, newRequest, requestLink, parseRequest, buildQuote, quoteTypedData, encodeQuote, decodeQuotes, checkQuote, quoteTerms, settleTx, makerApproval } from "../../src/privo-desk.js";
+import { DESK, newRequest, requestLink, parseRequest, buildQuote, quoteTypedData, encodeQuote, decodeQuotes, checkQuote, quoteTerms, settleTx, makerApproval, deskMarket, quoteStatus } from "../../src/privo-desk.js";
 import { USDG, MARKETS } from "../../src/privo-swap.js";
 
 const c = createPublicClient({ transport: http("https://robinhood-rpc.publicnode.com", { timeout: 30000, retryCount: 2 }) });
@@ -73,7 +73,11 @@ check(threw, "maker cannot answer their own request");
 
 // M-1 (HEY Research GHSA-9rqx-mq7q-7m59): a quote that pays the maker in a look-alike token must fail.
 const breq = parseRequest(requestLink(newRequest({ maker: maker.address, side: "buy", sym: "TSLA", qty: "2", limit: "400", hours: 4 })));
-const fake = privateKeyToAccount(generatePrivateKey()).address; // stands in for a token the taker deployed with symbol "TSLA"
+// A real, deployed ERC-20 that is not on PRIVO's list ($PRIVO itself) stands in for a look-alike the taker deployed.
+// It has code, a balance and an allowance, so on the old code every check would pass instead of crashing.
+const fake = "0xD5eE65798eb4E0528CdF9B6C23b663d8a2276dA0";
+await give(fake, takers[1].address, parseUnits("2", 18)); await give(fake, takers[1].address, parseUnits("2", 18), DESK);
+await give(fake, takers[2].address, parseUnits("1000", 18)); await give(fake, takers[2].address, parseUnits("1000", 18), DESK);
 const honestQ = buildQuote(breq, takers[0].address, "385");
 const evilQ = { ...buildQuote(breq, takers[1].address, "380"), takerToken: fake };
 const [honest, evil] = decodeQuotes([encodeQuote(honestQ, await takers[0].signTypedData(quoteTypedData(honestQ))), encodeQuote(evilQ, await takers[1].signTypedData(quoteTypedData(evilQ)))].join(" "));
@@ -86,6 +90,25 @@ const sc = await checkQuote(oc, back, { q: sreqEvil, sig: await takers[2].signTy
 check(!sc.ok && sc.problems.includes("Tokens do not match the request"), "sell request: fake USDG as taker token is rejected");
 check(!quoteTerms(evil.q, "buy").makerSells && quoteTerms(evil.q, "buy").shares === parseUnits("2", 18), "terms follow the request side, not the quote's taker token");
 check(makerApproval(honest.q, "buy").token.toLowerCase() === USDG.address.toLowerCase() && makerApproval(honest.q, "buy").amount === honest.q.makerAmount + quoteTerms(honest.q, "buy").fee, "buy request: maker approves USDG leg plus fee");
+
+// The fake token really is a funded, approved ERC-20 here (so this is a true regression test).
+const fb = await oc.readContract({ address: fake, abi: erc, functionName: "balanceOf", args: [takers[1].address] });
+const fa = await oc.readContract({ address: fake, abi: erc, functionName: "allowance", args: [takers[1].address, DESK] });
+check(fb === parseUnits("2", 18) && fa === parseUnits("2", 18), "look-alike is a live ERC-20 with balance and allowance for the desk");
+
+// Desk markets: stock tokens only (cbBTC has 8 decimals), and no prototype names.
+check(deskMarket("TSLA") && !deskMarket("BTC") && !deskMarket("ETH") && !deskMarket("__proto__") && !deskMarket("constructor") && !deskMarket("toString"), "desk takes stock markets only; BTC, ETH and prototype names are refused");
+let btc = false; try { newRequest({ maker: maker.address, side: "buy", sym: "BTC", qty: "0.00000001" }); } catch { btc = true; }
+check(btc, "a BTC request is refused (8-decimal cbBTC would be sized as 18)");
+let proto = false; try { parseRequest(requestLink({ ...req, sym: "__proto__" })); } catch { proto = true; }
+check(proto, "a link with sym __proto__ is refused");
+
+// Losing quotes: once the request settles with another taker, the app sees this quote as "lost" (withdraw it).
+const settledBy = who => ({ readContract: async () => false, getLogs: async () => [{ args: { taker: who }, transactionHash: "0x" + "1".repeat(64) }] });
+const mineQ = buildQuote(back, takers[1].address, "150");
+check((await quoteStatus(settledBy(takers[0].address), mineQ)) === "lost", "quote is 'lost' after the request settled with another taker");
+check((await quoteStatus({ readContract: async () => false, getLogs: async () => [] }, mineQ)) === "open", "quote is 'open' before anyone settles");
+check((await quoteStatus({ readContract: async () => true, getLogs: async () => [] }, mineQ)) === "done", "a cancelled quote is 'done'");
 
 // L-1: requests and quotes cannot outlive 24 hours, and a quote cannot outlive its request.
 let long = false; try { newRequest({ maker: maker.address, side: "sell", sym: "NVDA", qty: "1", hours: 48 }); } catch { long = true; }

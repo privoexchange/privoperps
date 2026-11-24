@@ -15,8 +15,8 @@ This repository holds the smart contract, the wallet-free client libraries the a
 | [`contracts/PrivoBlockDesk.sol`](contracts/PrivoBlockDesk.sol) | Block desk settlement contract (Solidity 0.8.26). No owner, no admin, no upgrade, no pause. |
 | [`contracts/out/PrivoBlockDesk.json`](contracts/out/PrivoBlockDesk.json) | Compiled ABI and bytecode (the deployed build). |
 | [`src/privo-swap.js`](src/privo-swap.js) | Spot: quotes (Uniswap v3/v4 quoters), Permit2 signing and Universal Router calldata with the PRIVO fee (`PAY_PORTION`). |
-| [`src/privo-perps.js`](src/privo-perps.js) | Perps on Orderly: account ID, EIP-712 registration and trading-key messages, ed25519 request signing, market, limit, stop, TP/SL and bracket orders, per-market leverage (up to Orderly's cap: 20x stocks, up to 100x major crypto), sizing checks, position history, referral codes and rebates (Orderly referral program), vault deposits, withdrawals and PnL settlement. |
-| [`src/privo-desk.js`](src/privo-desk.js) | Block desk client: request links, EIP-712 quotes, quote codes, checks and settle/cancel calldata. |
+| [`src/privo-perps.js`](src/privo-perps.js) | Perps on Orderly: account ID, EIP-712 registration and trading-key messages, ed25519 request signing with a non-extractable WebCrypto trading key (revoked at Orderly on sign-out), market, limit, stop, TP/SL and bracket orders, per-market leverage (up to Orderly's cap: 20x stocks, up to 100x major crypto), sizing checks, position history, referral codes and rebates (Orderly referral program), vault deposits, withdrawals and PnL settlement. |
+| [`src/privo-desk.js`](src/privo-desk.js) | Block desk client: request links (stock markets, 24-hour cap), EIP-712 quotes, quote codes, checks of both tokens against the request, settle/cancel calldata, and a status check that tells a taker to withdraw a losing quote. |
 | [`src/privo-journal.js`](src/privo-journal.js) | Spot trade journal: trades from receipts or the Blockscout API, average-cost book and realized PnL per sale. |
 | [`src/privo-feed.js`](src/privo-feed.js) | Read-only market data: pool prices and candles (GeckoTerminal), Orderly perp stats, candles and max leverage per market. |
 | [`test/`](test) | Tests that run against mainnet state with `eth_call` and state overrides. They send no transactions. |
@@ -45,17 +45,18 @@ The Block desk was deployed with the standard CREATE2 deployer (`0x4e59…956C`)
 
 ## Run the tests
 
-Node 20 or newer.
+Node 22 or newer (WebCrypto Ed25519).
 
 ```bash
 npm install
-npm test                      # journal, perps messages and sizing (offline + Orderly public API)
+npm test                      # journal, perps messages, sizing and trading-key handling (offline + Orderly public API)
 node test/blockdesk/desk-test.mjs      # contract on mainnet state: settle, fees, signatures, nonces
 node test/blockdesk/ui-core-test.mjs   # client library against the deployed contract
 node test/blockdesk/deploy-test.mjs    # deployed bytecode matches this build
 node test/sim/livetest.mjs             # spot swaps with the PRIVO fee for every market
 node test/sim/perpstest.mjs            # Orderly account IDs, vault deposits, key and request signing
 node test/sim/perps-pro-test.mjs       # stop, TP/SL, bracket, post-only/IOC and websocket auth (Orderly stubbed)
+node test/sim/perps-key-test.mjs       # non-extractable trading key, old-key migration, revoke on sign-out (Orderly stubbed)
 ```
 
 The chain tests read from a public Robinhood Chain RPC and use throwaway keys. Nothing is broadcast.

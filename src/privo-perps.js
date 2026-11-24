@@ -77,10 +77,26 @@ const hex = u8 => Array.from(u8, b => b.toString(16).padStart(2, "0")).join("");
 const unhex = h => new Uint8Array(h.match(/../g).map(x => parseInt(x, 16)));
 const b64url = u8 => btoa(String.fromCharCode(...u8)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
-export async function newOrderlyKey() {
+// A trading key is { orderlyKey, ck } where ck is a NON-extractable WebCrypto Ed25519 key: page scripts can ask it to
+// sign but can never read the secret out. Browsers without WebCrypto Ed25519 fall back to { orderlyKey, secret } (hex).
+const ED = { name: "Ed25519" };
+const subtle = () => globalThis.crypto?.subtle;
+const PKCS8_ED25519 = "302e020100300506032b657004220420"; // PKCS#8 prefix for a raw 32-byte Ed25519 seed
+export async function newOrderlyKey({ webcrypto = true } = {}) {
+  if (webcrypto) {
+    try {
+      const kp = await subtle().generateKey(ED, false, ["sign", "verify"]);
+      const pub = new Uint8Array(await subtle().exportKey("raw", kp.publicKey));
+      return { ck: kp.privateKey, orderlyKey: "ed25519:" + base58(pub) };
+    } catch { /* no WebCrypto Ed25519 here: fall back */ }
+  }
   const secret = ed.utils.randomPrivateKey();
   const pub = await ed.getPublicKeyAsync(secret);
   return { secret: hex(secret), orderlyKey: "ed25519:" + base58(pub) };
+}
+async function signBytes(key, bytes) {
+  if (key.ck) return new Uint8Array(await subtle().sign(ED, key.ck, bytes));
+  return ed.signAsync(bytes, unhex(key.secret));
 }
 export function addKeyTypedData(orderlyKey, days = C.KEY_DAYS) {
   const now = Date.now();
@@ -97,14 +113,14 @@ export async function addKey(td, signature, userAddress) {
 // Signed request: message = timestamp + METHOD + path(with query) + body; ed25519; base64url.
 export async function signedHeaders(key, acctId, method, path, body = "") {
   const ts = Date.now();
-  const sig = await ed.signAsync(new TextEncoder().encode(ts + method.toUpperCase() + path + body), unhex(key.secret));
+  const sig = await signBytes(key, new TextEncoder().encode(ts + method.toUpperCase() + path + body));
   return { "Content-Type": method === "GET" || method === "DELETE" ? "application/x-www-form-urlencoded" : "application/json",
     "orderly-account-id": acctId, "orderly-key": key.orderlyKey, "orderly-timestamp": String(ts), "orderly-signature": b64url(sig) };
 }
 // Private websocket auth: the trading key signs the timestamp alone (same encoding as REST).
 export async function wsAuthParams(key) {
   const ts = Date.now();
-  const sig = await ed.signAsync(new TextEncoder().encode(String(ts)), unhex(key.secret));
+  const sig = await signBytes(key, new TextEncoder().encode(String(ts)));
   return { orderly_key: key.orderlyKey, sign: b64url(sig), timestamp: String(ts) };
 }
 export const PRIVATE_WS = "wss://ws-private-evm.orderly.org/v2/ws/private/stream/";
@@ -289,9 +305,56 @@ export function depositTx(address, amount, fee, broker) {
 }
 
 /* ---------- key storage (per wallet, this browser) ---------- */
+// WebCrypto keys live in IndexedDB (a CryptoKey can be stored there but not read out). Old hex keys from localStorage
+// are moved into a non-extractable CryptoKey on first load and the plain copy is deleted. If IndexedDB is unavailable
+// (private windows), the key is kept in memory for this tab only.
 const KEY_PREFIX = "privo-orderly-key:";
-export function loadKey(acctId) {
-  try { const k = JSON.parse(localStorage.getItem(KEY_PREFIX + acctId) || "null"); return k && k.expires > Date.now() + 60000 ? k : null; } catch { return null; }
+const MEM = new Map();
+const fresh = k => (k && k.expires > Date.now() + 60000 ? k : null);
+function idb(mode, fn) {
+  return new Promise((res, rej) => {
+    if (!globalThis.indexedDB) return rej(new Error("no IndexedDB"));
+    const o = indexedDB.open("privo-keys", 1);
+    o.onupgradeneeded = () => o.result.createObjectStore("keys");
+    o.onerror = () => rej(o.error);
+    o.onsuccess = () => {
+      const db = o.result, tx = db.transaction("keys", mode), r = fn(tx.objectStore("keys"));
+      tx.oncomplete = () => { db.close(); res(r?.result); };
+      tx.onerror = tx.onabort = () => { db.close(); rej(tx.error); };
+    };
+  });
 }
-export function saveKey(acctId, key, expires) { try { localStorage.setItem(KEY_PREFIX + acctId, JSON.stringify({ ...key, expires })); } catch {} }
-export function forgetKey(acctId) { try { localStorage.removeItem(KEY_PREFIX + acctId); } catch {} }
+async function migrate(acctId, k) {
+  try {
+    const seed = unhex(k.secret);
+    if ("ed25519:" + base58(await ed.getPublicKeyAsync(seed)) !== k.orderlyKey) return k;
+    const ck = await subtle().importKey("pkcs8", unhex(PKCS8_ED25519 + k.secret), ED, false, ["sign"]);
+    const moved = { ck, orderlyKey: k.orderlyKey, expires: k.expires };
+    await idb("readwrite", st => st.put(moved, acctId));
+    try { localStorage.removeItem(KEY_PREFIX + acctId); } catch {}
+    return moved;
+  } catch { return k; }
+}
+export async function loadKey(acctId) {
+  const mem = fresh(MEM.get(acctId)); if (mem) return mem;
+  try { const k = fresh(await idb("readonly", st => st.get(acctId))); if (k) return k; } catch {}
+  let old = null; try { old = fresh(JSON.parse(localStorage.getItem(KEY_PREFIX + acctId) || "null")); } catch {}
+  return old?.secret ? migrate(acctId, old) : null;
+}
+export async function saveKey(acctId, key, expires) {
+  const k = { ...key, expires };
+  MEM.set(acctId, k);
+  if (k.ck) { try { await idb("readwrite", st => st.put({ ck: k.ck, orderlyKey: k.orderlyKey, expires }, acctId)); } catch {} return; }
+  try { localStorage.setItem(KEY_PREFIX + acctId, JSON.stringify(k)); } catch {}
+}
+export async function forgetKey(acctId) {
+  MEM.delete(acctId);
+  try { localStorage.removeItem(KEY_PREFIX + acctId); } catch {}
+  try { await idb("readwrite", st => st.delete(acctId)); } catch {}
+}
+// Sign-out: ask Orderly to drop the key (it signs its own removal), then delete the local copy either way.
+export async function revokeKey(key, acctId) {
+  try { await priv(key, acctId, "POST", "/v1/client/remove_orderly_key", { orderly_key: key.orderlyKey }); return true; }
+  catch { return false; }
+  finally { await forgetKey(acctId); }
+}

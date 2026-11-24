@@ -21,7 +21,7 @@ A sealed-quote OTC desk for trades that would move a thin pool.
 
    The quote travels back to the maker as a code, off chain.
 3. **The maker settles the best quote** with `settle(quote, signature)`. Both legs move in **one transaction**: all or nothing.
-4. **Losing quotes never reach the chain.** The public only sees the winning settlement.
+4. **Losing quotes stay off chain unless the maker fills them.** A signed quote is valid until its deadline (at most 24 hours), and the contract keeps one nonce per taker, not per request, so a maker could still settle a losing quote later at that taker's signed price. The app tracks this: once a request settles with another quote, it asks each losing taker to withdraw theirs with `cancel(nonce)`, and takers can sign quotes that end sooner than the request.
 
 ## Rules enforced by the contract
 

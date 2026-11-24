@@ -27,7 +27,7 @@ ok(fees.withdrawFee === 1, "USDG withdraw fee on Robinhood Chain from the API: "
 
 // 2. withdraw + settle against stubbed private endpoints
 const acct = privateKeyToAccount(generatePrivateKey());
-const key = await P.newOrderlyKey();
+const key = await P.newOrderlyKey({ webcrypto: false }); // the hex form, so the test can derive the public key itself
 const id = P.accountId(acct.address);
 const seen = [];
 const realFetch = globalThis.fetch;

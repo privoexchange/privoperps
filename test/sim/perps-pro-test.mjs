@@ -6,7 +6,7 @@ import * as P from "../../src/privo-perps.js";
 
 let fail = 0;
 const ok = (c, m) => { console.log((c ? "  ok    " : "  FAIL  ") + m); if (!c) fail++; };
-const key = await P.newOrderlyKey(), id = "0x" + "ab".repeat(32);
+const key = await P.newOrderlyKey({ webcrypto: false }), id = "0x" + "ab".repeat(32);
 const pub = await ed.getPublicKeyAsync(Uint8Array.from(key.secret.match(/../g).map(x => parseInt(x, 16))));
 const unb64 = s => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
 

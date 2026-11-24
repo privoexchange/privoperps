@@ -8,7 +8,7 @@
   "keywords": ["robinhood-chain", "orderly", "uniswap", "perps", "otc", "eip-712", "stock-tokens"],
   "engines": { "node": ">=20" },
   "scripts": {
-    "test": "node test/sim/journal-test.mjs && node test/sim/perps-trade-test.mjs && node test/sim/perps-pro-test.mjs",
+    "test": "node test/sim/journal-test.mjs && node test/sim/perps-trade-test.mjs && node test/sim/perps-pro-test.mjs && node test/sim/perps-key-test.mjs",
     "test:desk": "node test/blockdesk/desk-test.mjs && node test/blockdesk/ui-core-test.mjs && node test/blockdesk/deploy-test.mjs",
     "test:chain": "node test/sim/livetest.mjs && node test/sim/perpstest.mjs",
     "compile": "node test/blockdesk/compile.mjs"

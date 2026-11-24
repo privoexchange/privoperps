@@ -27,6 +27,10 @@ const isId = s => /^0x[0-9a-fA-F]{64}$/.test(String(s));
 export const MAX_HOURS = 24;
 const MAX_LIFE = MAX_HOURS * 3600 + 300; // 5 min slack for clock drift between maker and taker
 
+// The desk sizes every stock leg with STOCK_DECIMALS (18), so it only takes stock markets (cbBTC has 8 decimals).
+// Object.hasOwn keeps names like "__proto__" or "constructor" from passing as a market.
+export const deskMarket = sym => typeof sym === "string" && Object.hasOwn(MARKETS, sym) && MARKETS[sym].kind === "stock" && (MARKETS[sym].decimals ?? STOCK_DECIMALS) === STOCK_DECIMALS;
+
 /* ---------- tokens: names only from PRIVO's fixed list, never from the token contract ---------- */
 // The two tokens a request trades, as [maker gives, taker gives].
 export function requestTokens(r) {
@@ -44,7 +48,7 @@ export function tokenLabel(addr) {
 // side: what the MAKER wants to do with the stock: "sell" or "buy". qty in shares (string), limit in USDG per share (string or "").
 export function newRequest({ maker, side, sym, qty, limit = "", hours = 4 }) {
   if (!isAddress(maker)) throw new Error("Connect a wallet first");
-  if (!MARKETS[sym]) throw new Error("Unknown market");
+  if (!deskMarket(sym)) throw new Error("The block desk trades stock tokens only");
   if (side !== "sell" && side !== "buy") throw new Error("Pick buy or sell");
   const q = parseUnits(String(qty), STOCK_DECIMALS); if (q <= 0n) throw new Error("Enter a quantity");
   if (limit !== "" && parseUnits(String(limit), USDG.decimals) <= 0n) throw new Error("Limit price must be above zero");
@@ -55,7 +59,7 @@ export const requestLink = (r, base) => (base || "") + "#block/pv_" + b64e(JSON.
 export function parseRequest(text) {
   const m = String(text || "").match(/pv_([A-Za-z0-9_-]+)/); if (!m) throw new Error("No PRIVO block link found");
   const r = JSON.parse(b64d(m[1]));
-  if (r.v !== 1 || !isAddress(r.maker) || !MARKETS[r.sym] || !isId(r.id) || (r.side !== "sell" && r.side !== "buy") || !Number.isInteger(r.deadline)) throw new Error("This block link is damaged");
+  if (r.v !== 1 || !isAddress(r.maker) || !deskMarket(r.sym) || !isId(r.id) || (r.side !== "sell" && r.side !== "buy") || !Number.isInteger(r.deadline)) throw new Error("This block link is damaged");
   if (r.deadline > now() + MAX_LIFE) throw new Error(`This request stays open longer than ${MAX_HOURS} hours, so PRIVO will not quote it`);
   return { ...r, maker: getAddress(r.maker) };
 }
@@ -64,6 +68,7 @@ export function parseRequest(text) {
 // price: USDG per share offered by the taker (string). hours: optional shorter life for this quote than the request's.
 export function buildQuote(r, taker, price, { hours } = {}) {
   if (!isAddress(taker)) throw new Error("Connect a wallet first");
+  if (!deskMarket(r.sym)) throw new Error("The block desk trades stock tokens only");
   if (getAddress(taker) === r.maker) throw new Error("You made this request. Use another wallet to answer it.");
   if (r.deadline <= now() + 60) throw new Error("This request has closed");
   if (r.deadline > now() + MAX_LIFE) throw new Error(`This request stays open longer than ${MAX_HOURS} hours, so PRIVO will not quote it`);
@@ -109,6 +114,7 @@ export function quoteTerms(q, side) {
 // Everything the maker needs to know before settling one quote.
 export async function checkQuote(client, r, { q, sig }) {
   const problems = [];
+  if (!deskMarket(r.sym)) return { ok: false, problems: ["The block desk trades stock tokens only"], terms: quoteTerms(q, r.side) };
   let signer = null;
   try { signer = await recoverTypedDataAddress({ ...quoteTypedData(q), signature: sig }); } catch {}
   if (!signer || signer !== q.taker) problems.push("Signature does not match the taker");
@@ -139,6 +145,24 @@ export async function checkQuote(client, r, { q, sig }) {
   if (tBal < q.takerAmount) problems.push("Taker's wallet no longer holds enough");
   if (tAllow < q.takerAmount) problems.push("Taker has not approved the desk for this amount");
   return { ok: problems.length === 0, problems, terms: t };
+}
+
+/* ---------- after settlement: a losing quote stays fillable until its deadline unless the taker cancels it ---------- */
+const SETTLED = parseAbi(["event Settled(bytes32 indexed blockId, address indexed maker, address indexed taker, address makerToken, uint256 makerAmount, address takerToken, uint256 takerAmount, address feeToken, uint256 fee)"]);
+// Settlements of one request since fromBlock: [{ taker, tx }].
+export async function settlementsOf(client, blockId, fromBlock = 0n) {
+  const logs = await client.getLogs({ address: DESK, event: SETTLED[0], args: { blockId }, fromBlock: BigInt(fromBlock), toBlock: "latest" });
+  return logs.map(l => ({ taker: getAddress(l.args.taker), tx: l.transactionHash }));
+}
+// For a taker's own quote: "open" (not settled yet), "won" (settled with this quote), "lost" (the request settled with
+// someone else and this quote can still be filled: cancel it), "done" (used, cancelled or expired).
+export async function quoteStatus(client, q, fromBlock = 0n) {
+  if (q.deadline <= BigInt(now())) return "done";
+  const used = await client.readContract({ address: DESK, abi: DESK_ABI, functionName: "nonceUsed", args: [q.taker, q.nonce] });
+  const s = await settlementsOf(client, q.blockId, fromBlock);
+  if (s.some(x => x.taker === getAddress(q.taker))) return used ? "won" : "open";
+  if (used) return "done";
+  return s.length ? "lost" : "open";
 }
 
 /* ---------- transactions ---------- */
