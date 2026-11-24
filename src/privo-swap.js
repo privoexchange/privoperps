@@ -69,6 +69,19 @@ export const MARKETS = {
   MU:        { address: "0xfF080c8ce2E5feadaCa0Da81314Ae59D232d4afD", pools: [{ v: 3, fee: 3000, id: "0xd057B1Bc54917855BBee58eAd58647f47caB35E5" }, { v: 4, fee: 10000, ts: 200, id: "0x6fa3ee0048e78bf0a513eb0ab56f482944a767c21db990fcf555605e69f05659" }] },
   INTC:      { address: "0xc72b96e0E48ecd4DC75E1e45396e26300BC39681", pools: [{ v: 3, fee: 3000, id: "0x2e5a92f5013a64661A49312111be2e8aBd33F56a" }, { v: 4, fee: 10000, ts: 200, id: "0xf2e329e631d0fb315a5c563ee3a9120f24822b5ef6c502a91cb56b174d5d8c22" }] },
   GME:       { address: "0x1b0E319c6A659F002271B69dB8A7df2F911c153E", pools: [{ v: 3, fee: 10000, id: "0xE9713f453aDB9245B19559790c96F470a18F2fDF" }, { v: 3, fee: 500, id: "0xE2b46c905E12Ab8E2f864e4821a4325884C1B126" }] },
+  // Added 25 Nov 2026: 11 more Robinhood stock tokens with USDG pools on Uniswap (same token contract as TSLA, pools checked
+  // on chain, each quotes through the Universal Router with the PRIVO fee).
+  USO:  { address: "0xa30FA36Db767ad9eD3f7a60fC79526fB4d56D344", pools: [{ v: 3, fee: 3000, id: "0x02175608F1b5E6b5ed221cCFdC7Be197D111D915" }, { v: 3, fee: 10000, id: "0x6ED11C7DfD8e2ca5620eed29a7B9b53AE90dD0D2" }] },
+  GLD:  { address: "0xC9a981FEE1F9DEc688bb123ccDeCc63D0deBFC4e", pools: [{ v: 3, fee: 3000, id: "0x7A6A053eCCf1446A2633E05aA6D40D09381997ec" }, { v: 3, fee: 500, id: "0xBA2f1ed4cEB2169D538d1e614D847E83C5A55913" }] },
+  TTWO: { address: "0x5e81213613b6B86EaB4c6c50d718d34359459786", pools: [{ v: 3, fee: 3000, id: "0xD9Ab4b7fAe6DC2f7020134Ec744A8F53Ef3E5E24" }] },
+  DELL: { address: "0x941AE714EC6D8130c7B75d67160Ca08f1e7d11Dd", pools: [{ v: 3, fee: 10000, id: "0xc30c89cB7815A1488b7998D15eEC73961707Fc5a" }] },
+  AVGO: { address: "0x156E175DD063a8cE274C50654eF40e0032b3fbcF", pools: [{ v: 3, fee: 3000, id: "0x5B7C404f1d7d77F9f3885aB13d7764F8a173028c" }] },
+  COST: { address: "0x4EA005168D7F09a7A0Ba9D1DEf21a479950E44C2", pools: [{ v: 3, fee: 3000, id: "0x0a2121A50A09eD0796ae81F9c53fF9398355a398" }] },
+  AMC:  { address: "0x05a3d1Cd21d0C88145E82600E62e7E496e0F222B", pools: [{ v: 4, fee: 1000, ts: 10, id: "0x7499938c352d5b5b8f0c648722aca5ee964ef9b85c3a3041f1ec379726291d9d" }, { v: 3, fee: 3000, id: "0xaA34feA710a1A737840329051D81D3B0B7C564d5" }] },
+  HIMS: { address: "0xCceE82fE024c36fA15E1005edE3E9e4787e23D09", pools: [{ v: 3, fee: 3000, id: "0xC8C90d3a1c1a24967E773ac2aD0d456BA3E31F64" }] },
+  CBRS: { address: "0x5c90450Bbb4273D7b2f17CF6917AEB237A569679", pools: [{ v: 3, fee: 3000, id: "0xD5ed9A6c9DF23f10EEcab73635912c5547fd9185" }] },
+  BE:   { address: "0x822CC93fFD030293E9842c30BBD678F530701867", pools: [{ v: 3, fee: 3000, id: "0x1baD145C8F06444E0dF81c28257cd20231Bd1f16" }] },
+  MRNA: { address: "0x43B07D15cE533bEc5476d70C22a78a1B2B662155", pools: [{ v: 3, fee: 3000, id: "0xB40196272A6d2EB5edF6d93bc4DC39856AD95E0E" }, { v: 3, fee: 10000, id: "0xA34d0667334074DF2d5BfD259e79E6B9cf1fA8Bf" }] },
   ETH:  { kind: "crypto", native: true, address: WETH, pools: [
     { v: 3, fee: 100, id: "0x52e65B17fB6E5BA00Ed806f37Afcd2DaA50271Ca" },
     { v: 3, fee: 500, id: "0x69BfaF19C9f377BB306a89aEd9F6B07e2c1a8d9a" },
