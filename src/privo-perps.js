@@ -116,7 +116,9 @@ async function priv(key, acctId, method, path, bodyObj) {
 }
 export const holdings = (key, id) => priv(key, id, "GET", "/v1/client/holding");
 // Deposits and withdrawals with their status (NEW, CONFIRM, PROCESSING, COMPLETED, FAILED…).
-export const assetHistory = (key, id, side) => priv(key, id, "GET", "/v1/asset/history" + (side ? "?side=" + side : ""));
+// Query values in signed request paths are always URL-encoded.
+const qp = v => encodeURIComponent(String(v));
+export const assetHistory = (key, id, side) => priv(key, id, "GET", "/v1/asset/history" + (side ? "?side=" + qp(side) : ""));
 export const positions = (key, id) => priv(key, id, "GET", "/v1/positions");
 export function marketOrder(key, id, { symbol, side, qty, reduceOnly = false }) {
   if (!C.TRADING_ENABLED) throw new Error("Perps order entry is not enabled yet");
@@ -154,7 +156,7 @@ export function placeOrder(key, id, { symbol, side, qty, type = "MARKET", price,
   return priv(key, id, "POST", "/v1/order", body);
 }
 export const openOrders = (key, id) => priv(key, id, "GET", "/v1/orders?status=INCOMPLETE");
-export const cancelAll = (key, id, symbol) => priv(key, id, "DELETE", "/v1/orders" + (symbol ? "?symbol=" + symbol : ""));
+export const cancelAll = (key, id, symbol) => priv(key, id, "DELETE", "/v1/orders" + (symbol ? "?symbol=" + qp(symbol) : ""));
 
 /* ---------- algo orders: stop, take profit / stop loss, bracket (trigger on Orderly's mark price) ---------- */
 // Stop market (or stop limit when price is given): fires once the mark crosses trigger.
@@ -181,8 +183,8 @@ export function bracketOrder(key, id, { symbol, side, qty, price, tp, sl }) {
     child_orders: [{ symbol, algo_type: "POSITIONAL_TP_SL", child_orders: tpslChildren(symbol, closeSide, { tp, sl }) }] });
 }
 export const algoOrders = (key, id) => priv(key, id, "GET", "/v1/algo/orders?status=INCOMPLETE");
-export const cancelAlgo = (key, id, orderId, symbol) => priv(key, id, "DELETE", "/v1/algo/order?order_id=" + orderId + "&symbol=" + symbol);
-export const cancelAllAlgo = (key, id, symbol) => priv(key, id, "DELETE", "/v1/algo/orders" + (symbol ? "?symbol=" + symbol : ""));
+export const cancelAlgo = (key, id, orderId, symbol) => priv(key, id, "DELETE", "/v1/algo/order?order_id=" + qp(orderId) + "&symbol=" + qp(symbol));
+export const cancelAllAlgo = (key, id, symbol) => priv(key, id, "DELETE", "/v1/algo/orders" + (symbol ? "?symbol=" + qp(symbol) : ""));
 // Flattens one algo order into the parts the UI shows: { kind: "TP"|"SL"|"STOP"|"BRACKET", trigger, price, side, qty }.
 export function algoParts(o) {
   const kids = [], walk = x => { for (const c of x.child_orders || []) { kids.push(c); walk(c); } };
@@ -194,12 +196,12 @@ export function algoParts(o) {
 // Referral program (Orderly). Rebates are paid by Orderly from the builder fees; PRIVO only shows and binds codes.
 export const referralInfo = (key, id) => priv(key, id, "GET", "/v1/referral/info");
 export const autoReferral = (key, id) => priv(key, id, "GET", "/v1/referral/auto_referral/progress");
-export const refereeList = (key, id, page = 1, size = 50) => priv(key, id, "GET", "/v1/referral/referee_info?page=" + page + "&size=" + size);
-export const rebateSummary = (key, id, page = 1, size = 30) => priv(key, id, "GET", "/v1/referral/rebate_summary?page=" + page + "&size=" + size);
+export const refereeList = (key, id, page = 1, size = 50) => priv(key, id, "GET", "/v1/referral/referee_info?page=" + qp(page) + "&size=" + qp(size));
+export const rebateSummary = (key, id, page = 1, size = 30) => priv(key, id, "GET", "/v1/referral/rebate_summary?page=" + qp(page) + "&size=" + qp(size));
 export const bindReferral = (key, id, code) => priv(key, id, "POST", "/v1/referral/bind", { referral_code: code });
 // The code this account joined with ("" when none).
 export async function boundRefCode(accountId) {
-  const j = await api("/v1/public/referral/check_ref_code?account_id=" + accountId);
+  const j = await api("/v1/public/referral/check_ref_code?account_id=" + qp(accountId));
   return j.success ? j.data?.referral_code || "" : "";
 }
 export async function refCodeExists(code) {
@@ -207,9 +209,9 @@ export async function refCodeExists(code) {
   return !!(j.success && j.data?.exist);
 }
 // Closed (and partly closed) positions with realized PnL, average open/close price and leverage.
-export const positionHistory = (key, id, limit = 50) => priv(key, id, "GET", "/v1/position_history?limit=" + limit);
+export const positionHistory = (key, id, limit = 50) => priv(key, id, "GET", "/v1/position_history?limit=" + qp(limit));
 export const fundingHistory = (key, id) => priv(key, id, "GET", "/v1/funding_fee/history");
-export const cancelOrder = (key, id, orderId, symbol) => priv(key, id, "DELETE", "/v1/order?order_id=" + orderId + "&symbol=" + symbol);
+export const cancelOrder = (key, id, orderId, symbol) => priv(key, id, "DELETE", "/v1/order?order_id=" + qp(orderId) + "&symbol=" + qp(symbol));
 export const tradeHistory = (key, id) => priv(key, id, "GET", "/v1/trades");
 export const clientInfo = (key, id) => priv(key, id, "GET", "/v1/client/info");
 // Leverage per market (cross margin): list [{ symbol, leverage }] and set one. Orderly caps it at 1 / base_imr.

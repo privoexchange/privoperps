@@ -70,5 +70,39 @@ let res3 = "ok"; try { await call(null, { from: maker.address, ...settleTx(quote
 check(res3 === "reverted", "settling the under-approved quote reverts on chain, as flagged");
 let threw = false; try { buildQuote(back, maker.address, "150"); } catch { threw = true; }
 check(threw, "maker cannot answer their own request");
+
+// M-1 (HEY Research GHSA-9rqx-mq7q-7m59): a quote that pays the maker in a look-alike token must fail.
+const breq = parseRequest(requestLink(newRequest({ maker: maker.address, side: "buy", sym: "TSLA", qty: "2", limit: "400", hours: 4 })));
+const fake = privateKeyToAccount(generatePrivateKey()).address; // stands in for a token the taker deployed with symbol "TSLA"
+const honestQ = buildQuote(breq, takers[0].address, "385");
+const evilQ = { ...buildQuote(breq, takers[1].address, "380"), takerToken: fake };
+const [honest, evil] = decodeQuotes([encodeQuote(honestQ, await takers[0].signTypedData(quoteTypedData(honestQ))), encodeQuote(evilQ, await takers[1].signTypedData(quoteTypedData(evilQ)))].join(" "));
+await give(MARKETS.TSLA.address, takers[0].address, parseUnits("2", 18)); await give(MARKETS.TSLA.address, takers[0].address, parseUnits("2", 18), DESK);
+const [hc, ec] = await Promise.all([checkQuote(oc, breq, honest), checkQuote(oc, breq, evil)]);
+check(hc.ok, "buy request: honest TSLA quote at 385 passes");
+check(!ec.ok && ec.problems.includes("Tokens do not match the request"), "buy request: look-alike taker token is rejected (" + ec.problems.join(", ") + ")");
+const sreqEvil = { ...buildQuote(back, takers[2].address, "150"), takerToken: fake };
+const sc = await checkQuote(oc, back, { q: sreqEvil, sig: await takers[2].signTypedData(quoteTypedData(sreqEvil)) });
+check(!sc.ok && sc.problems.includes("Tokens do not match the request"), "sell request: fake USDG as taker token is rejected");
+check(!quoteTerms(evil.q, "buy").makerSells && quoteTerms(evil.q, "buy").shares === parseUnits("2", 18), "terms follow the request side, not the quote's taker token");
+check(makerApproval(honest.q, "buy").token.toLowerCase() === USDG.address.toLowerCase() && makerApproval(honest.q, "buy").amount === honest.q.makerAmount + quoteTerms(honest.q, "buy").fee, "buy request: maker approves USDG leg plus fee");
+
+// L-1: requests and quotes cannot outlive 24 hours, and a quote cannot outlive its request.
+let long = false; try { newRequest({ maker: maker.address, side: "sell", sym: "NVDA", qty: "1", hours: 48 }); } catch { long = true; }
+check(long, "a request longer than 24 hours is refused");
+const farLink = requestLink({ ...req, deadline: Math.floor(Date.now() / 1000) + 30 * 86400 });
+let far = false; try { parseRequest(farLink); } catch { far = true; }
+check(far, "a link that stays open for 30 days is refused when parsed");
+const shortQ = buildQuote(back, takers[0].address, "151", { hours: 1 });
+check(Number(shortQ.deadline) <= Math.floor(Date.now() / 1000) + 3600 && Number(shortQ.deadline) < back.deadline, "taker can sign a quote that ends before the request");
+const lateQ = { ...buildQuote(back, takers[0].address, "151"), deadline: BigInt(back.deadline + 3600) };
+const lc = await checkQuote(oc, back, { q: lateQ, sig: await takers[0].signTypedData(quoteTypedData(lateQ)) });
+check(!lc.ok && lc.problems.includes("Quote stays valid longer than your request"), "a quote that outlives the request is flagged");
+
+// I-9: the limit check is exact in integers (149.999999 is below a 150 limit).
+const edgeReq = { ...back, limit: "150" };
+const edgeQ = buildQuote(edgeReq, takers[0].address, "149.999999");
+const ecq = await checkQuote(oc, edgeReq, { q: edgeQ, sig: await takers[0].signTypedData(quoteTypedData(edgeQ)) });
+check(ecq.problems.includes("Outside your limit price"), "149.999999 per share is flagged against a 150 limit");
 console.log(bad ? `\n${bad} failed` : "\nall checks passed");
 process.exit(bad ? 1 : 0);

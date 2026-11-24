@@ -246,6 +246,8 @@ function v4Swap(stock, pool, zeroForOne, minOut, settleCurrency, takeCurrency, t
 // q: result of quote(). permit: { message, signature } or null. Returns { to, data, value, minOut }.
 export function buildSwap(q, { slippageBps = 50, permit = null, deadlineSec = 1200 } = {}) {
   if (slippageBps < 1 || slippageBps > 500) throw new Error("Slippage must be between 0.01% and 5%");
+  // Re-check the fee here too: q may have been stored or rebuilt since quote() checked it.
+  if (BigInt(q.bips ?? 0) < 0n || BigInt(q.bips ?? 0) > BigInt(CONFIG.MAX_FEE_BIPS)) throw new Error("PRIVO fee is outside the allowed range");
   const m = MARKETS[q.sym], stock = m.address, pool = q.pool, buy = q.side === "buy", native = !!m.native;
   const tokenIn = buy ? USDG.address : stock;
   const cmds = [], inputs = [];

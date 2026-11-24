@@ -22,6 +22,23 @@ const b64d = s => decodeURIComponent(escape(atob(s.replace(/-/g, "+").replace(/_
 const rand32 = () => toHex(crypto.getRandomValues(new Uint8Array(32)));
 const randNonce = () => BigInt(toHex(crypto.getRandomValues(new Uint8Array(16))));
 const now = () => Math.floor(Date.now() / 1000);
+const isId = s => /^0x[0-9a-fA-F]{64}$/.test(String(s));
+// A request (and every quote signed for it) lives at most this long, so a signed quote cannot become a long free option.
+export const MAX_HOURS = 24;
+const MAX_LIFE = MAX_HOURS * 3600 + 300; // 5 min slack for clock drift between maker and taker
+
+/* ---------- tokens: names only from PRIVO's fixed list, never from the token contract ---------- */
+// The two tokens a request trades, as [maker gives, taker gives].
+export function requestTokens(r) {
+  const stock = getAddress(MARKETS[r.sym].address), usdg = getAddress(USDG.address);
+  return r.side === "sell" ? { makerToken: stock, takerToken: usdg } : { makerToken: usdg, takerToken: stock };
+}
+export function tokenLabel(addr) {
+  const a = String(addr || "").toLowerCase();
+  if (a === USDG.address.toLowerCase()) return "USDG";
+  const hit = Object.entries(MARKETS).find(([, m]) => m.address.toLowerCase() === a);
+  return hit ? hit[0] : "Unknown token";
+}
 
 /* ---------- requests (maker) ---------- */
 // side: what the MAKER wants to do with the stock: "sell" or "buy". qty in shares (string), limit in USDG per share (string or "").
@@ -31,22 +48,26 @@ export function newRequest({ maker, side, sym, qty, limit = "", hours = 4 }) {
   if (side !== "sell" && side !== "buy") throw new Error("Pick buy or sell");
   const q = parseUnits(String(qty), STOCK_DECIMALS); if (q <= 0n) throw new Error("Enter a quantity");
   if (limit !== "" && parseUnits(String(limit), USDG.decimals) <= 0n) throw new Error("Limit price must be above zero");
+  if (!(+hours > 0) || +hours > MAX_HOURS) throw new Error(`Quotes can stay valid for up to ${MAX_HOURS} hours`);
   return { v: 1, id: rand32(), maker: getAddress(maker), side, sym, qty: String(qty), limit: limit === "" ? "" : String(limit), deadline: now() + Math.round(hours * 3600) };
 }
 export const requestLink = (r, base) => (base || "") + "#block/pv_" + b64e(JSON.stringify(r));
 export function parseRequest(text) {
   const m = String(text || "").match(/pv_([A-Za-z0-9_-]+)/); if (!m) throw new Error("No PRIVO block link found");
   const r = JSON.parse(b64d(m[1]));
-  if (r.v !== 1 || !isAddress(r.maker) || !MARKETS[r.sym] || !/^0x[0-9a-fA-F]{64}$/.test(r.id)) throw new Error("This block link is damaged");
+  if (r.v !== 1 || !isAddress(r.maker) || !MARKETS[r.sym] || !isId(r.id) || (r.side !== "sell" && r.side !== "buy") || !Number.isInteger(r.deadline)) throw new Error("This block link is damaged");
+  if (r.deadline > now() + MAX_LIFE) throw new Error(`This request stays open longer than ${MAX_HOURS} hours, so PRIVO will not quote it`);
   return { ...r, maker: getAddress(r.maker) };
 }
 
 /* ---------- quotes (taker) ---------- */
-// price: USDG per share offered by the taker (string).
-export function buildQuote(r, taker, price) {
+// price: USDG per share offered by the taker (string). hours: optional shorter life for this quote than the request's.
+export function buildQuote(r, taker, price, { hours } = {}) {
   if (!isAddress(taker)) throw new Error("Connect a wallet first");
   if (getAddress(taker) === r.maker) throw new Error("You made this request. Use another wallet to answer it.");
   if (r.deadline <= now() + 60) throw new Error("This request has closed");
+  if (r.deadline > now() + MAX_LIFE) throw new Error(`This request stays open longer than ${MAX_HOURS} hours, so PRIVO will not quote it`);
+  const deadline = hours > 0 ? Math.min(r.deadline, now() + Math.round(hours * 3600)) : r.deadline;
   const stock = MARKETS[r.sym].address;
   const qty = parseUnits(r.qty, STOCK_DECIMALS);
   const px = parseUnits(String(price), USDG.decimals); if (px <= 0n) throw new Error("Enter your price");
@@ -57,7 +78,7 @@ export function buildQuote(r, taker, price) {
     maker: r.maker, taker: getAddress(taker),
     makerToken: makerSells ? stock : USDG.address, makerAmount: makerSells ? qty : total,
     takerToken: makerSells ? USDG.address : stock, takerAmount: makerSells ? total : qty,
-    blockId: r.id, nonce: randNonce(), deadline: BigInt(r.deadline),
+    blockId: r.id, nonce: randNonce(), deadline: BigInt(deadline),
   };
 }
 export const quoteTypedData = q => ({ domain: DOMAIN, types: QUOTE_TYPES, primaryType: "Quote", message: q });
@@ -70,13 +91,15 @@ export function decodeQuotes(text) {
     let j; try { j = JSON.parse(b64d(s.slice(12))); } catch { throw new Error("one code is not a complete PRIVO quote (cut off while copying?)"); }
     if (j.v !== 1 || !j.q || !j.sig) throw new Error("one code is not a PRIVO quote");
     const q = j.q;
+    if (!isId(q.blockId)) throw new Error("one code is not a PRIVO quote");
     return { q: { ...q, maker: getAddress(q.maker), taker: getAddress(q.taker), makerToken: getAddress(q.makerToken), takerToken: getAddress(q.takerToken), makerAmount: BigInt(q.makerAmount), takerAmount: BigInt(q.takerAmount), nonce: BigInt(q.nonce), deadline: BigInt(q.deadline) }, sig: j.sig };
   });
 }
 
-// Price per share in USDG and the fee, from the maker's point of view.
-export function quoteTerms(q) {
-  const makerSells = q.takerToken.toLowerCase() === USDG.address.toLowerCase();
+// Price per share in USDG and the fee, from the maker's point of view. The direction comes from the request's side
+// (never from the quote's takerToken, which the taker chooses); without a side it falls back to the maker's own token.
+export function quoteTerms(q, side) {
+  const makerSells = side ? side === "sell" : q.makerToken.toLowerCase() !== USDG.address.toLowerCase();
   const usdg = makerSells ? q.takerAmount : q.makerAmount, shares = makerSells ? q.makerAmount : q.takerAmount;
   const fee = usdg * FEE_BIPS / 10000n;
   return { makerSells, usdg, shares, fee, price: Number(formatUnits(usdg, USDG.decimals)) / Number(formatUnits(shares, STOCK_DECIMALS)),
@@ -91,13 +114,22 @@ export async function checkQuote(client, r, { q, sig }) {
   if (!signer || signer !== q.taker) problems.push("Signature does not match the taker");
   if (q.blockId !== r.id) problems.push("Answers a different request");
   if (q.maker !== r.maker) problems.push("Made out to another maker");
-  const stock = MARKETS[r.sym].address.toLowerCase(), wantMaker = r.side === "sell" ? stock : USDG.address.toLowerCase();
-  if (q.makerToken.toLowerCase() !== wantMaker) problems.push("Tokens do not match the request");
+  // Both legs must be exactly the request's tokens: a look-alike token on either side is rejected.
+  const want = requestTokens(r);
+  const tokensOk = q.makerToken.toLowerCase() === want.makerToken.toLowerCase() && q.takerToken.toLowerCase() === want.takerToken.toLowerCase();
+  if (!tokensOk) problems.push("Tokens do not match the request");
   const qty = parseUnits(r.qty, STOCK_DECIMALS);
   if ((r.side === "sell" ? q.makerAmount : q.takerAmount) !== qty) problems.push("Quantity differs from the request");
   if (q.deadline <= BigInt(now())) problems.push("Expired");
-  const t = quoteTerms(q);
-  if (r.limit && ((r.side === "sell" && t.price < +r.limit) || (r.side === "buy" && t.price > +r.limit))) problems.push("Outside your limit price");
+  if (q.deadline > BigInt(r.deadline)) problems.push("Quote stays valid longer than your request");
+  const t = quoteTerms(q, r.side);
+  if (r.limit && t.shares > 0n) {
+    // integer compare: usdg / shares vs limit, both scaled to USDG units per whole share
+    const lhs = t.usdg * 10n ** BigInt(STOCK_DECIMALS), rhs = parseUnits(String(r.limit), USDG.decimals) * t.shares;
+    if ((r.side === "sell" && lhs < rhs) || (r.side === "buy" && lhs > rhs)) problems.push("Outside your limit price");
+  }
+  // Balance and allowance are only meaningful on the real token; skip the reads on a mismatched one.
+  if (!tokensOk) return { ok: false, problems, terms: t };
   const [used, tBal, tAllow] = await Promise.all([
     client.readContract({ address: DESK, abi: DESK_ABI, functionName: "nonceUsed", args: [q.taker, q.nonce] }),
     client.readContract({ address: q.takerToken, abi: ERC20, functionName: "balanceOf", args: [q.taker] }),
@@ -117,4 +149,4 @@ export const approveTx = (token, amount) => ({ to: getAddress(token), data: enco
 export const settleTx = ({ q, sig }) => ({ to: DESK, data: encodeFunctionData({ abi: DESK_ABI, functionName: "settle", args: [q, sig] }) });
 export const cancelTx = nonce => ({ to: DESK, data: encodeFunctionData({ abi: DESK_ABI, functionName: "cancel", args: [BigInt(nonce)] }) });
 // What the maker must approve: the maker leg, plus the fee when the maker pays USDG.
-export function makerApproval(q) { const t = quoteTerms(q); return { token: q.makerToken, amount: t.makerSells ? q.makerAmount : q.makerAmount + t.fee }; }
+export function makerApproval(q, side) { const t = quoteTerms(q, side); return { token: q.makerToken, amount: t.makerSells ? q.makerAmount : q.makerAmount + t.fee }; }
