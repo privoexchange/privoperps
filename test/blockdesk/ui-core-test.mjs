@@ -27,7 +27,7 @@ async function give(token, who, amount, spender) {
 
 // Maker wants to SELL 3 NVDA, limit 140 USDG.
 const req = newRequest({ maker: maker.address, side: "sell", sym: "NVDA", qty: "3", limit: "140", hours: 4 });
-const link = requestLink(req, "https://privo-exchange.netlify.app/app.html");
+const link = requestLink(req, "https://privoexchange.com/app");
 const back = parseRequest(link);
 check(back.id === req.id && back.maker === maker.address && back.qty === "3" && link.length < 600, `request link round-trips (${link.length} chars)`);
 

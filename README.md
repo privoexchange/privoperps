@@ -1,6 +1,6 @@
 # PRIVO Perps
 
-Open-source core of [PRIVO](https://privo-exchange.netlify.app), a trading layer for stock tokens and crypto on **Robinhood Chain** (chain ID 4663):
+Open-source core of [PRIVO](https://privoexchange.com), a trading layer for stock tokens and crypto on **Robinhood Chain** (chain ID 4663):
 
 - **Spot** trades route to Uniswap pools, with a small PRIVO fee taken on chain.
 - **Perps** run on [Orderly Network](https://orderly.network) through PRIVO's builder account (`privo`), margined in USDG.
