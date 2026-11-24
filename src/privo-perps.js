@@ -191,6 +191,21 @@ export function algoParts(o) {
   const tp = pick("TAKE_PROFIT"), sl = pick("STOP_LOSS");
   return { tp: tp ? +tp.trigger_price : null, sl: sl ? +sl.trigger_price : null, trigger: o.trigger_price != null ? +o.trigger_price : null };
 }
+// Referral program (Orderly). Rebates are paid by Orderly from the builder fees; PRIVO only shows and binds codes.
+export const referralInfo = (key, id) => priv(key, id, "GET", "/v1/referral/info");
+export const autoReferral = (key, id) => priv(key, id, "GET", "/v1/referral/auto_referral/progress");
+export const refereeList = (key, id, page = 1, size = 50) => priv(key, id, "GET", "/v1/referral/referee_info?page=" + page + "&size=" + size);
+export const rebateSummary = (key, id, page = 1, size = 30) => priv(key, id, "GET", "/v1/referral/rebate_summary?page=" + page + "&size=" + size);
+export const bindReferral = (key, id, code) => priv(key, id, "POST", "/v1/referral/bind", { referral_code: code });
+// The code this account joined with ("" when none).
+export async function boundRefCode(accountId) {
+  const j = await api("/v1/public/referral/check_ref_code?account_id=" + accountId);
+  return j.success ? j.data?.referral_code || "" : "";
+}
+export async function refCodeExists(code) {
+  const j = await api("/v1/public/referral/verify_ref_code?referral_code=" + encodeURIComponent(code));
+  return !!(j.success && j.data?.exist);
+}
 // Closed (and partly closed) positions with realized PnL, average open/close price and leverage.
 export const positionHistory = (key, id, limit = 50) => priv(key, id, "GET", "/v1/position_history?limit=" + limit);
 export const fundingHistory = (key, id) => priv(key, id, "GET", "/v1/funding_fee/history");
