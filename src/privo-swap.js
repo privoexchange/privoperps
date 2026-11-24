@@ -53,6 +53,22 @@ export const MARKETS = {
   PLTR: { address: "0x894E1EC2D74FFE5AEF8Dc8A9e84686acCB964F2A", pools: [{ v: 4, fee: 10000, ts: 200, id: "0xee430ee1003e1985e1828a01b9a20dad67ad4302994fe2abb4a173de4ac54623" }] },
   NFLX: { address: "0xE0444EF8BF4eD74f74FD73686e2ddF4C1c5591E8", pools: [{ v: 3, fee: 3000, id: "0x59895C0302F41aEaa129D2fa2442CEc01E7eF45E" }, { v: 4, fee: 10000, ts: 100, id: "0xe4930a6215f21aa3b37c01adbded3362f56ae31b9a60066f5f9641e601d5111f" }] },
   AMD:  { address: "0x86923f96303D656E4aa86D9d42D1e57ad2023fdC", pools: [{ v: 3, fee: 3000, id: "0x48D284A2A4d3DC1b3Da08231Fe44317e7e7Aa51f" }, { v: 4, fee: 10000, ts: 200, id: "0xde9f85fdd9e05a943a52f2c69ffafe3064a3287df03d02c9b431bc92d4781274" }] },
+  // Added 20 Nov 2026: more Robinhood stock tokens (SPCX = SpaceX, ANTHROPIC = Anthropic PBC Class A, token symbol ANT). Pools checked on chain,
+  // each one quotes through the Universal Router with the PRIVO fee (checked against mainnet state).
+  SPCX:      { address: "0x4a0E65A3EcceC6dBe60AE065F2e7bb85Fae35eEa", pools: [{ v: 3, fee: 500, id: "0xc61284332117c3FB23A2A56cceFFD07F7aF60029" }, { v: 3, fee: 3000, id: "0xEb07d9587eFD1778dFb9c385Ec43EF6d5F9fE401" }] },
+  ANTHROPIC: { address: "0xbbB6c29bCc3a1028A2B54310DF73F4F7A3bcB373", token: "ANT", label: "NEW", pools: [{ v: 3, fee: 500, id: "0x75aE79FD767A7cC410AB4EED13f8d3498e878d6A" }, { v: 3, fee: 3000, id: "0x0Ff3e9A6114a1C1E7a6490a5d9bc250990046400" }] },
+  MSFT:      { address: "0xe93237C50D904957Cf27E7B1133b510C669c2e74", pools: [{ v: 3, fee: 3000, id: "0xeb60bCD1D920ad6E102690CCFC6fB488899E1510" }, { v: 4, fee: 3000, ts: 60, id: "0x9194a557b6a6bb2236b49ea7e2bbccec5d3eeb705aef00903be4b3de1d949579" }] },
+  GOOGL:     { address: "0x2e0847E8910a9732eB3fb1bb4b70a580ADAD4FE3", pools: [{ v: 3, fee: 500, id: "0x34D0dC122CF9A8Eb296fC5e0D3A233625D7d19b7" }, { v: 4, fee: 3000, ts: 60, id: "0xd4ecb79fdc521d7725d22b33ed43cb4e47aa96bfad76aa29577e3151f723ac5e" }] },
+  META:      { address: "0xc0D6457C16Cc70d6790Dd43521C899C87ce02f35", pools: [{ v: 4, fee: 3000, ts: 60, id: "0x5875d407a42965b0e768c8925cea290e06fa50603ef34fc99eb92a1050e6ae36" }, { v: 3, fee: 3000, id: "0x107a7Cb40d8665360ba10E59471Af06150A50922" }] },
+  COIN:      { address: "0x6330D8C3178a418788dF01a47479c0ce7CCF450b", pools: [{ v: 4, fee: 10000, ts: 200, id: "0x007a13fa152f6dc383cad20a8eaab4e1e2538b606936eae2a424f8aa47d6db31" }, { v: 3, fee: 500, id: "0x3a6eC0aa6C702323414d449B5F60f4B742A82dED" }] },
+  MSTR:      { address: "0xec262a75e413fAfD0dF80480274532C79D42da09", pools: [{ v: 3, fee: 10000, id: "0x17578C0e0D15da44f31677263114F71aE76653EA" }] },
+  CRCL:      { address: "0xdF0992E440dD0be65BD8439b609d6D4366bf1CB5", pools: [{ v: 3, fee: 3000, id: "0x654E4143e82a5824445Ade0824351C2A9ACD95a8" }] },
+  SPY:       { address: "0x117cc2133c37B721F49dE2A7a74833232B3B4C0C", pools: [{ v: 4, fee: 3000, ts: 60, id: "0xfe2a80bb5618fd14984b92ca6d45bf5ba67443ddb1435e28b2e48df2fc1526cd" }] },
+  QQQ:       { address: "0xD5f3879160bc7c32ebb4dC785F8a4F505888de68", pools: [{ v: 3, fee: 500, id: "0xD60A5d14dB690B7Afad71F76B108071D7175597d" }, { v: 3, fee: 3000, id: "0xEbD78dcfc8a6b3A696f1E191aD1ff321f9579f79" }] },
+  TSM:       { address: "0x58FfE4a942d3885bAa22D7520691F611EF09e7AA", pools: [{ v: 3, fee: 10000, id: "0x07e8Ea83D4C1340774c8965125e26e12bf943bf1" }] },
+  MU:        { address: "0xfF080c8ce2E5feadaCa0Da81314Ae59D232d4afD", pools: [{ v: 3, fee: 3000, id: "0xd057B1Bc54917855BBee58eAd58647f47caB35E5" }, { v: 4, fee: 10000, ts: 200, id: "0x6fa3ee0048e78bf0a513eb0ab56f482944a767c21db990fcf555605e69f05659" }] },
+  INTC:      { address: "0xc72b96e0E48ecd4DC75E1e45396e26300BC39681", pools: [{ v: 3, fee: 3000, id: "0x2e5a92f5013a64661A49312111be2e8aBd33F56a" }, { v: 4, fee: 10000, ts: 200, id: "0xf2e329e631d0fb315a5c563ee3a9120f24822b5ef6c502a91cb56b174d5d8c22" }] },
+  GME:       { address: "0x1b0E319c6A659F002271B69dB8A7df2F911c153E", pools: [{ v: 3, fee: 10000, id: "0xE9713f453aDB9245B19559790c96F470a18F2fDF" }, { v: 3, fee: 500, id: "0xE2b46c905E12Ab8E2f864e4821a4325884C1B126" }] },
   ETH:  { kind: "crypto", native: true, address: WETH, pools: [
     { v: 3, fee: 100, id: "0x52e65B17fB6E5BA00Ed806f37Afcd2DaA50271Ca" },
     { v: 3, fee: 500, id: "0x69BfaF19C9f377BB306a89aEd9F6B07e2c1a8d9a" },
@@ -153,6 +169,21 @@ export async function quote(client, { sym, side, amount }) {
   const sellFee = side === "sell" ? portion(best.out, bips) : 0n;
   return { sym, side, amount, bips, pool: best.pool, swapIn, grossOut: best.out, fee: side === "buy" ? fee : sellFee,
     netOut: side === "buy" ? best.out : best.out - sellFee, all };
+}
+
+// Live mid price of a market straight from its pool (no indexer delay): quote a small buy, sell the
+// tokens back, and take the geometric mean of the two prices so the pool fee cancels out.
+// Returns USDG per token, or null when the pool cannot quote.
+export async function midPrice(client, sym, poolId) {
+  const m = MARKETS[sym]; if (!m) return null;
+  const pool = m.pools.find(p => p.id.toLowerCase() === String(poolId || "").toLowerCase()) || m.pools[0];
+  const usdIn = 10n ** BigInt(USDG.decimals) * 5n; // 5 USDG
+  const got = await quotePool(client, m.address, pool, USDG.address, m.address, usdIn, sym, true);
+  if (!got || got <= 0n) return null;
+  const back = await quotePool(client, m.address, pool, m.address, USDG.address, got, sym, false);
+  const d = 10 ** decimalsOf(sym), tok = Number(got) / d, buyPx = 5 / tok, sellPx = Number(back) / 10 ** USDG.decimals / tok;
+  const mid = Math.sqrt(buyPx * sellPx);
+  return mid > 0 && isFinite(mid) ? mid : null;
 }
 
 /* ---------- approvals ---------- */

@@ -17,10 +17,10 @@ for (const s of ["TSLA", "NVDA", "ETH", "BTC"]) {
 const tsla = await P.symbolInfo("PERP_TSLA_USDC"), btc = await P.symbolInfo("PERP_BTC_USDC");
 ok(P.sizeToQty(20, 391.44, tsla) === 0.05, "20 USDC of TSLA at 391.44 -> 0.05 (rounded down to tick)");
 ok(P.sizeToQty(20, 92000, btc) === 0.00021, "20 USDC of BTC at 92,000 -> 0.00021");
-ok(P.checkOrder({ qty: 0.02, mark: 391.44, info: tsla, collateral: 50, openNotional: 0 }).includes("Smallest order"), "under 10 USDC notional is refused");
-ok(P.checkOrder({ qty: 0.3, mark: 391.44, info: tsla, collateral: 50, openNotional: 0 }).includes("Over 2x"), "117 USDC on 50 collateral is over 2x and refused");
-ok(P.checkOrder({ qty: 0.2, mark: 391.44, info: tsla, collateral: 50, openNotional: 0 }) === "", "78 USDC on 50 collateral is allowed");
-ok(P.checkOrder({ qty: 0.1, mark: 391.44, info: tsla, collateral: 50, openNotional: 70 }).includes("Over 2x"), "existing positions count toward the 2x cap");
+ok(P.checkOrder({ qty: 0.02, mark: 391.44, info: tsla, avail: 100, lev: 2 }).includes("Smallest order"), "under 10 USDC notional is refused");
+ok(P.checkOrder({ qty: 0.3, mark: 391.44, info: tsla, avail: 100, lev: 2 }).includes("At 2x"), "117 USDC with 50 free margin at 2x is refused");
+ok(P.checkOrder({ qty: 0.2, mark: 391.44, info: tsla, avail: 100, lev: 2 }) === "", "78 USDC with 50 free margin at 2x is allowed");
+ok(P.checkOrder({ qty: 0.1, mark: 391.44, info: tsla, avail: 30, lev: 2 }).includes("At 2x"), "margin already used by positions lowers what can be opened");
 
 const fees = await P.tokenFees();
 ok(fees.withdrawFee === 1, "USDG withdraw fee on Robinhood Chain from the API: " + fees.withdrawFee + " USDG");

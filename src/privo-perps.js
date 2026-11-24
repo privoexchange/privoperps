@@ -16,10 +16,9 @@ export const PERPS_CONFIG = {
   TOKEN_DECIMALS: 6,
   // Builder ID privo is active on Orderly (20 Nov 2026).
   TRADING_ENABLED: true,
-  MAX_LEVERAGE: 2,
   KEY_DAYS: 30, // Orderly allows up to 365; PRIVO keeps trading keys short-lived.
-  // Orderly's public websocket only accepts an existing account id in its URL. Set any registered account id here.
-  WS_ACCOUNT: "",
+  // Orderly's public websocket only accepts an existing account id in its URL; this is PRIVO's own (public) account.
+  WS_ACCOUNT: "0x4f46f028a1f4ee6730edb7635ab5da91bd9bc94ab2ec3089ea00ac160e783dc4",
 };
 const C = PERPS_CONFIG;
 const OFFCHAIN = "0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC";
@@ -102,6 +101,13 @@ export async function signedHeaders(key, acctId, method, path, body = "") {
   return { "Content-Type": method === "GET" || method === "DELETE" ? "application/x-www-form-urlencoded" : "application/json",
     "orderly-account-id": acctId, "orderly-key": key.orderlyKey, "orderly-timestamp": String(ts), "orderly-signature": b64url(sig) };
 }
+// Private websocket auth: the trading key signs the timestamp alone (same encoding as REST).
+export async function wsAuthParams(key) {
+  const ts = Date.now();
+  const sig = await ed.signAsync(new TextEncoder().encode(String(ts)), unhex(key.secret));
+  return { orderly_key: key.orderlyKey, sign: b64url(sig), timestamp: String(ts) };
+}
+export const PRIVATE_WS = "wss://ws-private-evm.orderly.org/v2/ws/private/stream/";
 async function priv(key, acctId, method, path, bodyObj) {
   const body = bodyObj ? JSON.stringify(bodyObj) : "";
   const j = await api(path, { method, headers: await signedHeaders(key, acctId, method, path, body), body: body || undefined });
@@ -124,7 +130,7 @@ export async function symbolInfo(symbol) {
   if (infoCache[symbol]) return infoCache[symbol];
   const j = await api("/v1/public/info/" + symbol);
   if (!j.success) throw new Error(j.message || "No market info for " + symbol);
-  return (infoCache[symbol] = { baseTick: +j.data.base_tick, baseMin: +j.data.base_min, baseMax: +j.data.base_max, minNotional: +j.data.min_notional, quoteTick: +j.data.quote_tick, mmr: +j.data.base_mmr || 0.05 });
+  return (infoCache[symbol] = { baseTick: +j.data.base_tick, baseMin: +j.data.base_min, baseMax: +j.data.base_max, minNotional: +j.data.min_notional, quoteTick: +j.data.quote_tick, mmr: +j.data.base_mmr || 0.05, maxLev: Math.max(1, Math.floor(1 / (+j.data.base_imr || 1) + 1e-9)) });
 }
 export function roundPrice(px, info) {
   const dec = Math.max(0, Math.round(-Math.log10(info.quoteTick)));
@@ -140,10 +146,60 @@ export function limitOrder(key, id, { symbol, side, qty, price, reduceOnly = fal
   if (!C.TRADING_ENABLED) throw new Error("Perps order entry is not enabled yet");
   return priv(key, id, "POST", "/v1/order", { symbol, order_type: "LIMIT", side, order_price: price, order_quantity: qty, reduce_only: reduceOnly });
 }
+// Any regular order: MARKET, LIMIT, POST_ONLY (maker only) or IOC (fill now, cancel the rest).
+export function placeOrder(key, id, { symbol, side, qty, type = "MARKET", price, reduceOnly = false }) {
+  if (!C.TRADING_ENABLED) throw new Error("Perps order entry is not enabled yet");
+  const body = { symbol, order_type: type, side, order_quantity: qty, reduce_only: reduceOnly };
+  if (type !== "MARKET") body.order_price = price;
+  return priv(key, id, "POST", "/v1/order", body);
+}
 export const openOrders = (key, id) => priv(key, id, "GET", "/v1/orders?status=INCOMPLETE");
+export const cancelAll = (key, id, symbol) => priv(key, id, "DELETE", "/v1/orders" + (symbol ? "?symbol=" + symbol : ""));
+
+/* ---------- algo orders: stop, take profit / stop loss, bracket (trigger on Orderly's mark price) ---------- */
+// Stop market (or stop limit when price is given): fires once the mark crosses trigger.
+export function stopOrder(key, id, { symbol, side, qty, trigger, price, reduceOnly = false }) {
+  const body = { symbol, algo_type: "STOP", type: price ? "LIMIT" : "MARKET", side, quantity: qty, trigger_price: trigger, trigger_price_type: "MARK_PRICE", reduce_only: reduceOnly };
+  if (price) body.price = price;
+  return priv(key, id, "POST", "/v1/algo/order", body);
+}
+// Children that close the whole position at the take-profit and/or stop-loss trigger. closeSide is the opposite of the position.
+export function tpslChildren(symbol, closeSide, { tp, sl }) {
+  const out = [];
+  if (tp) out.push({ symbol, algo_type: "TAKE_PROFIT", side: closeSide, type: "CLOSE_POSITION", trigger_price_type: "MARK_PRICE", trigger_price: tp, reduce_only: true });
+  if (sl) out.push({ symbol, algo_type: "STOP_LOSS", side: closeSide, type: "CLOSE_POSITION", trigger_price_type: "MARK_PRICE", trigger_price: sl, reduce_only: true });
+  return out;
+}
+// TP/SL on an open position (covers the full position, whatever its size later).
+export function positionTpSl(key, id, { symbol, closeSide, tp, sl }) {
+  return priv(key, id, "POST", "/v1/algo/order", { symbol, algo_type: "POSITIONAL_TP_SL", trigger_price_type: "MARK_PRICE", child_orders: tpslChildren(symbol, closeSide, { tp, sl }) });
+}
+// Limit order that arms TP/SL on the resulting position once it fills.
+export function bracketOrder(key, id, { symbol, side, qty, price, tp, sl }) {
+  const closeSide = side === "BUY" ? "SELL" : "BUY";
+  return priv(key, id, "POST", "/v1/algo/order", { symbol, algo_type: "BRACKET", side, type: "LIMIT", price, quantity: qty,
+    child_orders: [{ symbol, algo_type: "POSITIONAL_TP_SL", child_orders: tpslChildren(symbol, closeSide, { tp, sl }) }] });
+}
+export const algoOrders = (key, id) => priv(key, id, "GET", "/v1/algo/orders?status=INCOMPLETE");
+export const cancelAlgo = (key, id, orderId, symbol) => priv(key, id, "DELETE", "/v1/algo/order?order_id=" + orderId + "&symbol=" + symbol);
+export const cancelAllAlgo = (key, id, symbol) => priv(key, id, "DELETE", "/v1/algo/orders" + (symbol ? "?symbol=" + symbol : ""));
+// Flattens one algo order into the parts the UI shows: { kind: "TP"|"SL"|"STOP"|"BRACKET", trigger, price, side, qty }.
+export function algoParts(o) {
+  const kids = [], walk = x => { for (const c of x.child_orders || []) { kids.push(c); walk(c); } };
+  walk(o);
+  const pick = t => kids.find(c => c.algo_type === t);
+  const tp = pick("TAKE_PROFIT"), sl = pick("STOP_LOSS");
+  return { tp: tp ? +tp.trigger_price : null, sl: sl ? +sl.trigger_price : null, trigger: o.trigger_price != null ? +o.trigger_price : null };
+}
+// Closed (and partly closed) positions with realized PnL, average open/close price and leverage.
+export const positionHistory = (key, id, limit = 50) => priv(key, id, "GET", "/v1/position_history?limit=" + limit);
+export const fundingHistory = (key, id) => priv(key, id, "GET", "/v1/funding_fee/history");
 export const cancelOrder = (key, id, orderId, symbol) => priv(key, id, "DELETE", "/v1/order?order_id=" + orderId + "&symbol=" + symbol);
 export const tradeHistory = (key, id) => priv(key, id, "GET", "/v1/trades");
 export const clientInfo = (key, id) => priv(key, id, "GET", "/v1/client/info");
+// Leverage per market (cross margin): list [{ symbol, leverage }] and set one. Orderly caps it at 1 / base_imr.
+export const leverages = (key, id) => priv(key, id, "GET", "/v1/client/leverages");
+export const setLeverage = (key, id, symbol, leverage) => priv(key, id, "POST", "/v1/client/leverage", { symbol, leverage });
 export async function futures(symbol) {
   const j = await api("/v1/public/futures/" + symbol);
   if (!j.success) throw new Error(j.message || "No data for " + symbol);
@@ -156,13 +212,13 @@ export function sizeToQty(notional, mark, info) {
   const q = Math.floor(notional / mark / info.baseTick + 1e-9) * info.baseTick;
   return +q.toFixed(dec);
 }
-// Checks a new order against the market rules and PRIVO's leverage cap. Returns an error text or "".
-export function checkOrder({ qty, mark, info, collateral, openNotional, maxLev = C.MAX_LEVERAGE }) {
+// Checks a new order against the market rules and the free margin at the chosen leverage. Returns an error text or "".
+export function checkOrder({ qty, mark, info, avail, lev }) {
   if (!(qty > 0)) return "Enter a size";
   if (qty < info.baseMin) return "Smallest size is " + info.baseMin;
   if (qty > info.baseMax) return "Largest size is " + info.baseMax;
-  if (qty * mark < info.minNotional) return "Smallest order is " + info.minNotional + " USDC";
-  if (openNotional + qty * mark > collateral * maxLev + 1e-9) return "Over " + maxLev + "x: you can open up to " + Math.max(0, collateral * maxLev - openNotional).toFixed(2) + " USDC more";
+  if (qty * mark < info.minNotional) return "Smallest order is " + info.minNotional + " USDG";
+  if (qty * mark > avail + 1e-9) return "At " + lev + "x you can open up to " + Math.max(0, avail).toFixed(2) + " USDG more";
   return "";
 }
 

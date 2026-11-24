@@ -15,10 +15,10 @@ This repository holds the smart contract, the wallet-free client libraries the a
 | [`contracts/PrivoBlockDesk.sol`](contracts/PrivoBlockDesk.sol) | Block desk settlement contract (Solidity 0.8.26). No owner, no admin, no upgrade, no pause. |
 | [`contracts/out/PrivoBlockDesk.json`](contracts/out/PrivoBlockDesk.json) | Compiled ABI and bytecode (the deployed build). |
 | [`src/privo-swap.js`](src/privo-swap.js) | Spot: quotes (Uniswap v3/v4 quoters), Permit2 signing and Universal Router calldata with the PRIVO fee (`PAY_PORTION`). |
-| [`src/privo-perps.js`](src/privo-perps.js) | Perps on Orderly: account ID, EIP-712 registration and trading-key messages, ed25519 request signing, orders, sizing and leverage checks, vault deposits, withdrawals and PnL settlement. |
+| [`src/privo-perps.js`](src/privo-perps.js) | Perps on Orderly: account ID, EIP-712 registration and trading-key messages, ed25519 request signing, market, limit, stop, TP/SL and bracket orders, per-market leverage (up to Orderly's cap: 20x stocks, up to 100x major crypto), sizing checks, position history, vault deposits, withdrawals and PnL settlement. |
 | [`src/privo-desk.js`](src/privo-desk.js) | Block desk client: request links, EIP-712 quotes, quote codes, checks and settle/cancel calldata. |
 | [`src/privo-journal.js`](src/privo-journal.js) | Spot trade journal: trades from receipts or the Blockscout API, average-cost book and realized PnL per sale. |
-| [`src/privo-feed.js`](src/privo-feed.js) | Read-only market data: pool prices and candles (GeckoTerminal), Orderly perp stats and candles. |
+| [`src/privo-feed.js`](src/privo-feed.js) | Read-only market data: pool prices and candles (GeckoTerminal), Orderly perp stats, candles and max leverage per market. |
 | [`test/`](test) | Tests that run against mainnet state with `eth_call` and state overrides. They send no transactions. |
 | [`docs/block-desk.md`](docs/block-desk.md) | How the Block desk works, its rules and test results. |
 
@@ -54,6 +54,7 @@ node test/blockdesk/ui-core-test.mjs   # client library against the deployed con
 node test/blockdesk/deploy-test.mjs    # deployed bytecode matches this build
 node test/sim/livetest.mjs             # spot swaps with the PRIVO fee for every market
 node test/sim/perpstest.mjs            # Orderly account IDs, vault deposits, key and request signing
+node test/sim/perps-pro-test.mjs       # stop, TP/SL, bracket, post-only/IOC and websocket auth (Orderly stubbed)
 ```
 
 The chain tests read from a public Robinhood Chain RPC and use throwaway keys. Nothing is broadcast.
