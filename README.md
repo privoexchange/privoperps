@@ -27,6 +27,7 @@ This repository holds the smart contract, the wallet-free client libraries the a
 | | Address (Robinhood Chain) |
 |---|---|
 | PrivoBlockDesk | [`0x8D94fCe2925EBA2448DA28f9461c8b644c26b8e7`](https://robinhoodchain.blockscout.com/address/0x8D94fCe2925EBA2448DA28f9461c8b644c26b8e7) |
+| $PRIVO token (ERC-20, 18 decimals) | [`0xD5eE65798eb4E0528CdF9B6C23b663d8a2276dA0`](https://robinhoodchain.blockscout.com/token/0xD5eE65798eb4E0528CdF9B6C23b663d8a2276dA0) |
 | PRIVO fee wallet (Safe multisig) | [`0xCc051cf47547386bA147FDDfcBCFE00E791C1418`](https://robinhoodchain.blockscout.com/address/0xCc051cf47547386bA147FDDfcBCFE00E791C1418) |
 | Orderly vault | [`0x816f722424b49cf1275cc86da9840fbd5a6167e9`](https://robinhoodchain.blockscout.com/address/0x816f722424b49cf1275cc86da9840fbd5a6167e9) |
 | Uniswap Universal Router | [`0x8876789976decbfcbbbe364623c63652db8c0904`](https://robinhoodchain.blockscout.com/address/0x8876789976decbfcbbbe364623c63652db8c0904) |
