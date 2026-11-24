@@ -19,8 +19,36 @@ This repository holds the smart contract, the wallet-free client libraries the a
 | [`src/privo-desk.js`](src/privo-desk.js) | Block desk client: request links (stock markets, 24-hour cap), EIP-712 quotes, quote codes, checks of both tokens against the request, settle/cancel calldata, and a status check that tells a taker to withdraw a losing quote. |
 | [`src/privo-journal.js`](src/privo-journal.js) | Spot trade journal: trades from receipts or the Blockscout API, average-cost book and realized PnL per sale. |
 | [`src/privo-feed.js`](src/privo-feed.js) | Read-only market data: pool prices and candles (GeckoTerminal), Orderly perp stats, candles and max leverage per market. |
+| [`src/privo-sdk.js`](src/privo-sdk.js) | SDK for bots and AI agents: the `Privo` class over the modules above (spot buy/sell, perps connect/deposit/order, block request/answer/check/settle, read API). |
+| [`examples/`](examples) | Example bots, starting with a dip buyer. |
 | [`test/`](test) | Tests that run against mainnet state with `eth_call` and state overrides. They send no transactions. |
 | [`docs/block-desk.md`](docs/block-desk.md) | How the Block desk works, its rules and test results. |
+
+## SDK for bots and agents
+
+Bots trade on PRIVO with their own wallet. There are no API keys, and PRIVO never holds a bot's keys or funds.
+
+```bash
+npm install github:privoexchange/privoperps viem
+```
+
+```js
+import { createWalletClient, http } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import { Privo, Swap } from "privoperps";
+
+const wallet = createWalletClient({ account: privateKeyToAccount(process.env.PRIVATE_KEY), chain: Swap.CHAIN, transport: http() });
+const privo = new Privo({ wallet });
+
+await privo.spot.quote("TSLA", "buy", "100");        // 100 USDG in, with the 0.15% PRIVO fee
+await privo.spot.buy("TSLA", "100");
+const { key } = await privo.perps.connect();          // once; store key.secret privately, pass it back as perpsKey
+await privo.perps.order({ sym: "ETH", side: "BUY", qty: 0.01 });
+```
+
+Read-only data, no key: `GET https://privoexchange.com/api/v1/markets`, `/api/v1/prices` and `/api/v1/arena`.
+
+The perps trading key places and cancels orders for 30 days and cannot withdraw. Use a separate bot wallet that holds only what the bot may trade. See [`examples/dip-buyer.mjs`](examples/dip-buyer.mjs) (start with `DRY_RUN=1`).
 
 ## Deployed
 
@@ -49,7 +77,7 @@ Node 22 or newer (WebCrypto Ed25519).
 
 ```bash
 npm install
-npm test                      # journal, perps messages, sizing and trading-key handling (offline + Orderly public API)
+npm test                      # journal, perps messages, sizing, trading-key handling and the SDK (offline + Orderly public API)
 node test/blockdesk/desk-test.mjs      # contract on mainnet state: settle, fees, signatures, nonces
 node test/blockdesk/ui-core-test.mjs   # client library against the deployed contract
 node test/blockdesk/deploy-test.mjs    # deployed bytecode matches this build

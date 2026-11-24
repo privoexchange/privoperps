@@ -30,8 +30,10 @@ function group(rows, g) {
 }
 const rawLimit = (g, limit) => Math.min(1000, g === "w" || g === "M" ? 1000 : g ? limit * g : limit);
 
+// On servers (Netlify functions) GeckoTerminal refuses requests without a user agent; browsers send their own.
+const SERVER = typeof window === "undefined";
 async function direct(url) {
-  const r = await fetch(url, { headers: { accept: "application/json" } });
+  const r = await fetch(url, { headers: SERVER ? { accept: "application/json", "user-agent": "privo-site" } : { accept: "application/json" } });
   if (!r.ok) throw new Error("HTTP " + r.status + " from " + new URL(url).host);
   return r.json();
 }
