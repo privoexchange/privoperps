@@ -175,6 +175,17 @@ async function quotePool(client, stock, pool, tokenIn, tokenOut, amountIn, sym, 
   return result[0];
 }
 
+// Quotes every known pool of a market for swapIn and returns the one that pays most: { best: { pool, out }, all }.
+async function bestPool(client, sym, buy, swapIn) {
+  const m = MARKETS[sym];
+  const [tokenIn, tokenOut] = buy ? [USDG.address, m.address] : [m.address, USDG.address];
+  const tries = await Promise.allSettled(m.pools.map(p => quotePool(client, m.address, p, tokenIn, tokenOut, swapIn, sym, buy)));
+  const all = tries.map((t, i) => ({ pool: m.pools[i], out: t.status === "fulfilled" ? t.value : null, error: t.status === "rejected" ? (t.reason?.shortMessage || t.reason?.message) : null }));
+  const ok = all.filter(q => q.out && q.out > 0n).sort((a, b) => (b.out > a.out ? 1 : b.out < a.out ? -1 : 0));
+  if (!ok.length) throw new Error("No pool can fill this size right now (" + sym + ")");
+  return { best: ok[0], all };
+}
+
 // side "buy": amount is USDG to spend (6 decimals). side "sell": amount of the asset to sell (its own decimals).
 // Every known pool is quoted and the one that pays the trader most wins.
 export async function quote(client, { sym, side, amount }) {
@@ -184,15 +195,65 @@ export async function quote(client, { sym, side, amount }) {
   const bips = feeBips();
   const fee = side === "buy" ? portion(amount, bips) : 0n;
   const swapIn = amount - fee;
-  const [tokenIn, tokenOut] = side === "buy" ? [USDG.address, m.address] : [m.address, USDG.address];
-  const tries = await Promise.allSettled(m.pools.map(p => quotePool(client, m.address, p, tokenIn, tokenOut, swapIn, sym, side === "buy")));
-  const all = tries.map((t, i) => ({ pool: m.pools[i], out: t.status === "fulfilled" ? t.value : null, error: t.status === "rejected" ? (t.reason?.shortMessage || t.reason?.message) : null }));
-  const ok = all.filter(q => q.out && q.out > 0n).sort((a, b) => (b.out > a.out ? 1 : b.out < a.out ? -1 : 0));
-  if (!ok.length) throw new Error("No pool can fill this size right now");
-  const best = ok[0];
+  const { best, all } = await bestPool(client, sym, side === "buy", swapIn);
   const sellFee = side === "sell" ? portion(best.out, bips) : 0n;
   return { sym, side, amount, bips, pool: best.pool, swapIn, grossOut: best.out, fee: side === "buy" ? fee : sellFee,
     netOut: side === "buy" ? best.out : best.out - sellFee, all };
+}
+
+/* ---------- baskets: one USDG amount spread over several stock tokens, in one transaction ---------- */
+export const BASKET_MAX = 8;
+// legs: [{ sym, w }] with w the share in basis points (summing to 10000); amount: USDG to spend in total (6 decimals).
+// The PRIVO fee is taken once on the total; what is left is split by weight (the last leg takes the rounding) and each
+// leg is quoted on its best pool. Returns { amount, bips, fee, swapIn, legs: [{ sym, w, swapIn, pool, grossOut }] }.
+export function splitBasket(legs, amount) {
+  if (!Array.isArray(legs) || legs.length < 2 || legs.length > BASKET_MAX) throw new Error("A basket holds 2 to " + BASKET_MAX + " stock tokens");
+  const seen = new Set();
+  for (const l of legs) {
+    const m = MARKETS[l.sym];
+    if (!m || m.kind !== "stock" || m.native) throw new Error("Baskets take stock tokens only (" + l.sym + ")");
+    if (seen.has(l.sym)) throw new Error(l.sym + " is in the basket twice");
+    if (!Number.isInteger(l.w) || l.w <= 0) throw new Error("Each stock needs a share above 0");
+    seen.add(l.sym);
+  }
+  if (legs.reduce((a, l) => a + l.w, 0) !== 10000) throw new Error("The shares must add up to 100%");
+  if (amount <= 0n) throw new Error("Enter an amount");
+  const bips = feeBips(), fee = portion(amount, bips), swapIn = amount - fee;
+  let left = swapIn;
+  const out = legs.map((l, i) => {
+    const part = i === legs.length - 1 ? left : swapIn * BigInt(l.w) / 10000n;
+    left -= part;
+    return { sym: l.sym, w: l.w, swapIn: part };
+  });
+  if (out.some(l => l.swapIn <= 0n)) throw new Error("The amount is too small to split");
+  return { amount, bips, fee, swapIn, legs: out };
+}
+export async function quoteBasket(client, { legs, amount }) {
+  const b = splitBasket(legs, amount);
+  const qs = await Promise.all(b.legs.map(l => bestPool(client, l.sym, true, l.swapIn)));
+  b.legs = b.legs.map((l, i) => ({ ...l, pool: qs[i].best.pool, grossOut: qs[i].best.out }));
+  return b;
+}
+// qb: result of quoteBasket(). One router call under one Permit2 signature for the total: the PRIVO fee goes from the
+// trader straight to the fee Safe, then for each leg the router pulls exactly that leg's USDG and swaps its whole balance
+// (this router reverts on explicit v3 input amounts, so every swap spends the router balance, as a single trade does),
+// sending the tokens to the trader with that leg's own slippage floor. If any leg falls short, the whole call reverts.
+export function buildBasket(qb, { slippageBps = 50, permit = null, deadlineSec = 1200 } = {}) {
+  if (slippageBps < 1 || slippageBps > 500) throw new Error("Slippage must be between 0.01% and 5%");
+  if (BigInt(qb.bips ?? 0) < 0n || BigInt(qb.bips ?? 0) > BigInt(CONFIG.MAX_FEE_BIPS)) throw new Error("PRIVO fee is outside the allowed range");
+  if (qb.legs.reduce((a, l) => a + l.swapIn, 0n) + qb.fee !== qb.amount) throw new Error("Basket legs do not add up");
+  const cmds = [], inputs = [];
+  if (permit) { cmds.push(CMD.PERMIT2_PERMIT); inputs.push(enc([PERMIT_T, "bytes"], [permit.message, permit.signature])); }
+  if (qb.fee > 0n && CONFIG.FEE_WALLET) { cmds.push(CMD.PERMIT2_TRANSFER_FROM); inputs.push(enc(["address", "address", "uint160"], [USDG.address, CONFIG.FEE_WALLET, qb.fee])); }
+  const mins = [];
+  for (const l of qb.legs) {
+    const m = MARKETS[l.sym], minOut = applySlippage(l.grossOut, slippageBps);
+    mins.push(minOut);
+    cmds.push(CMD.PERMIT2_TRANSFER_FROM); inputs.push(enc(["address", "address", "uint160"], [USDG.address, ADDRESS_THIS, l.swapIn]));
+    if (l.pool.v === 3) for (const inp of v3Swaps(l.sym, l.pool, true, MSG_SENDER, minOut)) { cmds.push(CMD.V3_SWAP_EXACT_IN); inputs.push(inp); }
+    else { cmds.push(CMD.V4_SWAP); inputs.push(v4Swap(m.address, l.pool, poolKey(m.address, l.pool).currency0 === USDG.address, minOut, USDG.address, m.address, false)); }
+  }
+  return { ...finish(cmds, inputs, deadlineSec, 0n), mins };
 }
 
 // Live mid price of a market straight from its pool (no indexer delay): quote a small buy, sell the

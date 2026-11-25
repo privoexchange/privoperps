@@ -2,7 +2,7 @@
 // Sources: the receipt of trades made in this app, plus a backfill from Blockscout's token-transfer API.
 // Stored in this browser only (localStorage), per wallet. Wallet-free and testable in Node.
 import { formatUnits, getAddress, parseAbiItem, decodeEventLog } from "viem";
-import { USDG, WETH, MARKETS, decimalsOf, isNative } from "./privo-swap.js";
+import { CONFIG, USDG, WETH, MARKETS, decimalsOf, isNative } from "./privo-swap.js";
 
 const KEY = a => "privo-spot-journal:" + a.toLowerCase();
 const EXPLORER_API = "https://robinhoodchain.blockscout.com/api/v2";
@@ -15,9 +15,11 @@ export function load(addr) {
   try { const j = JSON.parse(localStorage.getItem(KEY(addr)) || "null"); return j && Array.isArray(j.trades) ? j : { trades: [], synced: 0 }; } catch { return { trades: [], synced: 0 }; }
 }
 export function save(addr, j) { try { localStorage.setItem(KEY(addr), JSON.stringify(j)); } catch {} }
+// One entry per transaction and market: a basket buy is one transaction with several markets.
+const tradeKey = t => t.hash.toLowerCase() + ":" + t.sym;
 export function merge(j, entries) {
-  const seen = new Set(j.trades.map(t => t.hash.toLowerCase()));
-  for (const e of entries) if (!seen.has(e.hash.toLowerCase())) { j.trades.push(e); seen.add(e.hash.toLowerCase()); }
+  const seen = new Set(j.trades.map(tradeKey));
+  for (const e of entries) if (!seen.has(tradeKey(e))) { j.trades.push(e); seen.add(tradeKey(e)); }
   j.trades.sort((a, b) => a.ts - b.ts);
   return j;
 }
@@ -49,6 +51,37 @@ function entry({ hash, ts, sym, usdgOut, usdgIn, tokOut, tokIn }) {
   return null;
 }
 
+// Basket buys: one transaction that buys several markets with USDG. Transfers in log order ({ tok, from, to, v }, lowercase
+// addresses): each leg is the wallet's USDG pulled into the router followed by that market's token arriving; the PRIVO fee
+// (sent straight to the fee Safe) is shared over the legs by their USDG. Returns one buy per market, or null when the
+// transaction is not a basket (fewer than two markets bought).
+export function basketEntries(transfers, addr, { hash, ts = Date.now() }) {
+  const me = addr.toLowerCase(), usdg = USDG.address.toLowerCase(), fw = (CONFIG.FEE_WALLET || "").toLowerCase();
+  let pending = 0n, fee = 0n;
+  const legs = [];
+  for (const t of transfers) {
+    if (t.tok === usdg && t.from === me) { if (fw && t.to === fw) fee += t.v; else pending += t.v; }
+    else if (bySymbol[t.tok] && !isNative(bySymbol[t.tok]) && t.to === me && pending > 0n) { legs.push({ sym: bySymbol[t.tok], tokIn: t.v, usdg: pending }); pending = 0n; }
+  }
+  if (legs.length < 2 || new Set(legs.map(l => l.sym)).size !== legs.length) return null;
+  const total = legs.reduce((a, l) => a + l.usdg, 0n);
+  let feeLeft = fee;
+  return legs.map((l, i) => {
+    const f = i === legs.length - 1 ? feeLeft : fee * l.usdg / total;
+    feeLeft -= f;
+    return entry({ hash, ts, sym: l.sym, usdgOut: l.usdg + f, usdgIn: 0n, tokOut: 0n, tokIn: l.tokIn });
+  });
+}
+// ERC-20 transfers of a receipt, in log order, for basketEntries.
+export function receiptTransfers(rc) {
+  const out = [];
+  for (const l of rc.logs) {
+    if (l.topics[0] !== "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef" || l.topics.length !== 3) continue;
+    out.push({ tok: l.address.toLowerCase(), from: "0x" + l.topics[1].slice(26).toLowerCase(), to: "0x" + l.topics[2].slice(26).toLowerCase(), v: BigInt(l.data) });
+  }
+  return out;
+}
+
 // Backfill: ERC-20 transfers of the wallet, grouped per transaction. Only the real USDG and PRIVO market
 // tokens count (look-alike tokens with the same name are ignored by address). Native ETH legs are not in
 // this feed, so ETH trades come from receipts only.
@@ -64,7 +97,8 @@ export async function backfill(addr, { pages = 6, fetchFn = fetch } = {}) {
       const a = (it.token?.address_hash || it.token?.address || "").toLowerCase();
       const sym = a === usdg ? "USDG" : bySymbol[a];
       if (!sym || (sym !== "USDG" && isNative(sym))) continue;
-      const t = tx[it.transaction_hash] ||= { hash: it.transaction_hash, ts: Date.parse(it.timestamp), legs: {} };
+      const t = tx[it.transaction_hash] ||= { hash: it.transaction_hash, ts: Date.parse(it.timestamp), legs: {}, list: [] };
+      t.list.push({ i: Number(it.log_index ?? 0), tok: a, from: (it.from?.hash || "").toLowerCase(), to: (it.to?.hash || "").toLowerCase(), v: BigInt(it.total?.value || 0) });
       const leg = t.legs[sym] ||= { out: 0n, in: 0n };
       const v = BigInt(it.total?.value || 0);
       if (it.from?.hash?.toLowerCase() === me) leg.out += v;
@@ -75,6 +109,8 @@ export async function backfill(addr, { pages = 6, fetchFn = fetch } = {}) {
   const out = [];
   for (const t of Object.values(tx)) {
     const u = t.legs.USDG; if (!u) continue;
+    const basket = basketEntries(t.list.sort((a, b) => a.i - b.i), addr, { hash: t.hash, ts: t.ts });
+    if (basket) { out.push(...basket); continue; }
     for (const [sym, l] of Object.entries(t.legs)) {
       if (sym === "USDG") continue;
       const e = entry({ hash: t.hash, ts: t.ts, sym, usdgOut: u.out, usdgIn: u.in, tokOut: l.out, tokIn: l.in });

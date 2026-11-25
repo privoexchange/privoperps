@@ -4,6 +4,7 @@ Open-source core of [PRIVO](https://privoexchange.com), a trading layer for stoc
 
 - **Spot** trades route to Uniswap pools, with a small PRIVO fee taken on chain.
 - **Perps** run on [Orderly Network](https://orderly.network) through PRIVO's builder account (`privo`), margined in USDG.
+- **Baskets** on spot: one USDG amount spread over 2 to 8 stock tokens in a single Universal Router call under one Permit2 signature, each bought on its best pool with its own slippage floor; all or nothing, with the PRIVO fee taken once.
 - **Limit orders and TWAP** on spot: the trader signs an order off chain, and PRIVO's keeper fills it through the PrivoOrders contract at the trader's price or better, in one go or in slices over time.
 - **The Block desk** is a sealed-quote OTC contract: takers sign quotes off chain, the maker settles the best one in a single transaction, and losing quotes stay off chain unless the maker fills them (the app and SDK settle at most once per request and ask losing takers to withdraw).
 
