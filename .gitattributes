@@ -1,0 +1,2 @@
+# Solidity sources are compiled byte-for-byte into the deployed bytecode (metadata hash): keep LF everywhere.
+*.sol text eol=lf

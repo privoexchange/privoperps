@@ -5,6 +5,7 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { encodeFunctionData, parseAbi, pad, toHex, parseUnits, decodeFunctionData } from "viem";
 import { Privo, Swap, Perps } from "../../src/privo-sdk.js";
 
+const realFetch = globalThis.fetch;
 let bad = 0; const check = (ok, m) => { console.log((ok ? "  ok    " : "  FAIL  ") + m); if (!ok) bad++; };
 const c = Swap.makeClient(["https://robinhood-rpc.publicnode.com"]);
 const acct = privateKeyToAccount(generatePrivateKey());
@@ -42,7 +43,7 @@ const wallet = {
     // an approve that went through is reflected in later reads
     if (ok) try { const d = decodeFunctionData({ abi: erc, data: tx.data }); if (d.functionName === "approve") await give(tx.to, d.args[1], d.args[0]); } catch {}
     const hash = "0x" + (sent.length + 1).toString(16).padStart(64, "0");
-    sent.push({ hash, to: tx.to, ok, err });
+    sent.push({ hash, to: tx.to, ok, err, data: tx.data });
     return hash;
   },
 };
@@ -102,6 +103,27 @@ check(o.order_id === 42 && oc.init.method === "POST" && JSON.parse(oc.init.body)
 const again = new Privo({ wallet, client: sim, perpsKey: conn.key });
 await again.perps.order({ sym: "BTC", side: "SELL", qty: 0.001, type: "LIMIT", price: 70000 });
 check(JSON.parse(calls.at(-1).init.body).order_type === "LIMIT", "a saved key works without connecting again");
+// 5. limit orders: approve the Orders contract, sign the order, hand it to PRIVO's keeper (API stubbed, contract code faked)
+const { Orders } = await import("../../src/privo-sdk.js");
+const { verifyTypedData } = await import("viem");
+const KEEPER = "0x00000000000000000000000000000000000Ce0e1";
+let posted = null;
+globalThis.fetch = async (url, init = {}) => {
+  if (!String(url).endsWith("/api/orders")) return realFetch(url, init);
+  if (init.method === "POST") { posted = JSON.parse(init.body); return new Response(JSON.stringify({ hash: "0x" + "cd".repeat(32) })); }
+  return new Response(JSON.stringify({ contract: Orders.ORDERS, keeper: KEEPER }));
+};
+sim.getCode = async () => "0x6080";
+const n0o = sent.length;
+const placed = await privo.orders.limit({ sym: "TSLA", side: "buy", amount: "100", price: 300 });
+const po = Orders.fromJson(posted.order);
+check(placed.hash && po.filler.toLowerCase() === KEEPER.toLowerCase() && po.maker === acct.address && po.amountIn === parseUnits("100", 6) && po.minAmountOut === Orders.minOutForPrice("buy", parseUnits("100", 6), 300), "orders.limit builds a buy order at the given price, naming PRIVO's keeper");
+check(await verifyTypedData({ address: acct.address, signature: posted.signature, ...Orders.orderTypedData(po) }), "the order the SDK sends is signed by the bot's wallet");
+const ap = decodeFunctionData({ abi: erc, data: sent.at(-1).data });
+check(sent.length === n0o + 1 && sent.at(-1).to.toLowerCase() === Swap.USDG.address.toLowerCase() && ap.args[0] === Orders.ORDERS && ap.args[1] >= parseUnits("100", 6), "it approves the Orders contract for the USDG it may spend, one transaction");
+const tw = await privo.orders.twap({ sym: "TSLA", side: "sell", amount: "3", price: 400, slices: 6, every: 600, days: 1 });
+check(tw.order.slices === 6 && tw.order.interval === 600, "orders.twap splits the order into slices");
+
 let noWallet = false; try { await new Privo().spot.buy("TSLA", "1"); } catch (e) { noWallet = /wallet/.test(e.message); }
 check(noWallet, "trading without a wallet is refused with a clear error");
 

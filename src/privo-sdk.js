@@ -7,12 +7,14 @@
 //   await privo.spot.buy("TSLA", "100");                // spend 100 USDG on TSLA
 //   const { key } = await privo.perps.connect();        // once; store key.secret somewhere safe
 //   await privo.perps.order({ sym: "ETH", side: "BUY", qty: 0.01 });
+//   await privo.orders.limit({ sym: "TSLA", side: "buy", amount: "100", price: 370 });  // fills at 370 or better
 import { encodeFunctionData, getAddress, parseAbi, parseUnits, formatUnits } from "viem";
 import * as Swap from "./privo-swap.js";
 import * as Perps from "./privo-perps.js";
 import * as Desk from "./privo-desk.js";
+import * as Orders from "./privo-orders.js";
 
-export { Swap, Perps, Desk };
+export { Swap, Perps, Desk, Orders };
 export const API = "https://privoexchange.com/api/v1";
 const ERC20 = parseAbi(["function allowance(address,address) view returns (uint256)", "function approve(address,uint256) returns (bool)", "function balanceOf(address) view returns (uint256)"]);
 
@@ -46,6 +48,7 @@ export class Privo {
     this.perps = { connect: o => this._perpsConnect(o), deposit: a => this._perpsDeposit(a), order: o => this._perpsOrder(o), positions: () => this._perps(Perps.positions),
       openOrders: () => this._perps(Perps.openOrders), cancel: (orderId, sym) => this._perps((k, id) => Perps.cancelOrder(k, id, orderId, Perps.perpSymbol(sym))),
       holdings: () => this._perps(Perps.holdings), revokeKey: () => this._perps((k, id) => Perps.revokeKey(k, id)) };
+    this.orders = { limit: o => this._orderPlace({ ...o, slices: 1 }), twap: o => this._orderPlace(o), state: rec => Orders.orderState(this.client, Orders.fromJson(rec.order)), cancel: rec => this._send(Orders.cancelTx(rec.order.nonce)) };
     this.block = { request: o => this._blockRequest(o), answer: (link, price, o) => this._blockAnswer(link, price, o), check: (req, codes) => this._blockCheck(req, codes), settle: (req, quote) => this._blockSettle(req, quote) };
   }
 
@@ -131,6 +134,27 @@ export class Privo {
     if (side !== "BUY" && side !== "SELL") throw new Error("side is BUY or SELL");
     if (!(+qty > 0)) throw new Error("qty must be above 0");
     return this._perps((k, id) => Perps.placeOrder(k, id, { symbol: Perps.perpSymbol(sym), side, qty: +qty, type, price, reduceOnly }));
+  }
+
+  /* ---------- limit orders and TWAP (PrivoOrders contract, filled by PRIVO's keeper) ---------- */
+  // { sym, side: "buy"|"sell", amount (USDG to spend, or shares to sell), price (worst USDG per share), slices?, every? (seconds), days? }
+  // Approves the contract, signs the order (no gas) and hands it to PRIVO's keeper. Returns { hash, order, signature }: keep
+  // it to check state or cancel. The keeper can only fill at `price` or better; nothing fills after the deadline.
+  async _orderPlace({ sym, side, amount, price, slices = 1, every = 900, days = 7 }) {
+    const me = this._need();
+    const url = this.api.replace(/\/v1\/?$/, "") + "/orders"; // https://privoexchange.com/api/orders
+    const info = await getJson(url);
+    if (!info.keeper) throw new Error("Limit orders are not live yet");
+    const amountIn = parseUnits(String(amount), side === "buy" ? Swap.USDG.decimals : Swap.STOCK_DECIMALS);
+    const o = Orders.newOrder({ maker: me, filler: info.keeper, sym, side, amountIn, minAmountOut: Orders.minOutForPrice(side, amountIn, price), slices, interval: slices > 1 ? every : 0, hours: days * 24 });
+    if (!(await this.client.getCode({ address: Orders.ORDERS }))) throw new Error("The PrivoOrders contract is not deployed yet");
+    const allowance = await this.client.readContract({ address: o.tokenIn, abi: ERC20, functionName: "allowance", args: [me, Orders.ORDERS] });
+    if (allowance < (1n << 200n)) await this._send(Orders.approveTx(o.tokenIn, allowance + o.amountIn));
+    const signature = await this.wallet.signTypedData({ account: this.wallet.account, ...Orders.orderTypedData(o) });
+    const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ order: Orders.toJson(o), signature }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || "PRIVO could not take the order");
+    return { hash: j.hash, order: Orders.toJson(o), signature };
   }
 
   /* ---------- block desk (sealed quotes, one-transaction settlement) ---------- */

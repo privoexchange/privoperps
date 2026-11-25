@@ -1,7 +1,7 @@
 {
   "name": "privoperps",
-  "version": "1.3.1",
-  "description": "PRIVO SDK and core on Robinhood Chain: spot swaps through Uniswap with the PRIVO fee, Orderly perps, sealed OTC block trades and the Block desk contract. Every trade is signed by your own wallet.",
+  "version": "1.4.0",
+  "description": "PRIVO SDK and core on Robinhood Chain: spot swaps through Uniswap with the PRIVO fee, limit orders and TWAP, Orderly perps, sealed OTC block trades, and the Block desk and Orders contracts. Every trade is signed by your own wallet.",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -18,7 +18,9 @@
     "stock-tokens",
     "sdk",
     "trading-bot",
-    "ai-agent"
+    "ai-agent",
+    "limit-orders",
+    "twap"
   ],
   "engines": {
     "node": ">=22"
@@ -27,7 +29,8 @@
     "test": "node test/sim/journal-test.mjs && node test/sim/perps-pro-test.mjs && node test/sim/perps-key-test.mjs",
     "test:desk": "node test/blockdesk/desk-test.mjs && node test/blockdesk/ui-core-test.mjs && node test/blockdesk/deploy-test.mjs",
     "test:chain": "node test/sim/perps-trade-test.mjs && node test/sim/sdk-test.mjs && node test/sim/livetest.mjs && node test/sim/perpstest.mjs",
-    "compile": "node test/blockdesk/compile.mjs"
+    "compile": "node test/blockdesk/compile.mjs",
+    "test:orders": "node test/orders/orders-test.mjs && node test/orders/deploy-test.mjs"
   },
   "dependencies": {
     "@noble/ed25519": "2.1.0",
@@ -43,11 +46,13 @@
     "./perps": "./src/privo-perps.js",
     "./desk": "./src/privo-desk.js",
     "./feed": "./src/privo-feed.js",
-    "./journal": "./src/privo-journal.js"
+    "./journal": "./src/privo-journal.js",
+    "./orders": "./src/privo-orders.js"
   },
   "files": [
     "src",
     "contracts/PrivoBlockDesk.sol",
+    "contracts/PrivoOrders.sol",
     "README.md",
     "LICENSE"
   ]

@@ -292,6 +292,24 @@ export function buildSwap(q, { slippageBps = 50, permit = null, deadlineSec = 12
   return finish(cmds, inputs, deadlineSec, minNet, value);
 }
 
+// Route for a PrivoOrders fill: the slice is already in the router (sent by the Orders contract), so the swap spends
+// the router's own balance, takes no fee (the contract takes it) and sends the output to the caller, the Orders contract.
+// q: result of quote() for the slice (stock markets only). Returns { commands, inputs, minOut }.
+export function fillRoute(q, { slippageBps = 50, floor = 0n } = {}) {
+  if (slippageBps < 1 || slippageBps > 500) throw new Error("Slippage must be between 0.01% and 5%");
+  const m = MARKETS[q.sym];
+  if (!m || m.native) throw new Error("Orders take stock markets only");
+  const stock = m.address, pool = q.pool, buy = q.side === "buy", slipped = applySlippage(q.grossOut, slippageBps);
+  const minOut = slipped > floor ? slipped : floor; // never below the order's own limit for this slice
+  const cmds = [], inputs = [];
+  if (pool.v === 3) for (const inp of v3Swaps(q.sym, pool, buy, MSG_SENDER, minOut)) { cmds.push(CMD.V3_SWAP_EXACT_IN); inputs.push(inp); }
+  else {
+    const usdgIs0 = poolKey(stock, pool).currency0 === USDG.address;
+    cmds.push(CMD.V4_SWAP); inputs.push(v4Swap(stock, pool, buy ? usdgIs0 : !usdgIs0, minOut, buy ? USDG.address : stock, buy ? stock : USDG.address, false));
+  }
+  return { commands: bytes1(...cmds), inputs, minOut };
+}
+
 function finish(cmds, inputs, deadlineSec, minOut, value = 0n) {
   const deadline = BigInt(Math.floor(Date.now() / 1000) + deadlineSec);
   return { to: ADDR.ROUTER, value, minOut, data: encodeFunctionData({ abi: UR, functionName: "execute", args: [bytes1(...cmds), inputs, deadline] }) };
