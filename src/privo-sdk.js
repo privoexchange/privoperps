@@ -37,6 +37,7 @@ export class Privo {
     this.wallet = wallet;
     this.client = client || Swap.makeClient();
     this.logClient = logClient || Desk.makeLogClient();
+    this._settling = new Set(); // block requests with a settle in flight or done, locked before the first await
     this.api = api;
     this.slippageBps = slippageBps;
     this._key = perpsKey;
@@ -156,6 +157,14 @@ export class Privo {
   }
   // Maker: settles one checked quote (both legs move in one transaction).
   async _blockSettle(request, quote) {
+    // One settle per request from this instance, even when two calls start together: the lock is taken before any await.
+    const id = request.id;
+    if (this._settling.has(id)) throw new Error("This request is already being settled or has settled");
+    this._settling.add(id);
+    try { return await this._blockSettleOnce(request, quote); }
+    catch (e) { this._settling.delete(id); throw e; }
+  }
+  async _blockSettleOnce(request, quote) {
     const c = await Desk.checkQuote(this.client, request, quote);
     if (!c.ok) throw new Error("Quote failed its checks: " + c.problems.join(", "));
     // The contract allows more than one settle per request; the SDK sends at most one.

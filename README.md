@@ -95,6 +95,7 @@ The chain tests read from a public Robinhood Chain RPC and use throwaway keys. N
 - The contract holds no funds between transactions and has no privileged role. Fees and the fee address cannot change after deployment.
 - Quotes are EIP-712 signatures bound to the maker, both token amounts, a nonce and a deadline. ERC-1271 wallets are supported, and malleable (high-s) signatures are rejected.
 - Orderly trading keys are short-lived (30 days), stay in the user's browser and cannot withdraw. Withdrawals always need the wallet's EIP-712 signature.
+- Apps built on `src/privo-perps.js` should call `sweepLegacyKeys()` when they load and after a wallet connects (PRIVO's app does both), and `revokePending(key, accountId)` once the account has a valid key, so old hex keys from earlier versions are revoked at Orderly and deleted.
 
 The contract has not had an external audit. If you find a problem, please open a private security advisory on this repository instead of a public issue.
 

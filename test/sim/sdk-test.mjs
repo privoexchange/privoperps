@@ -1,6 +1,6 @@
 // privo-sdk.js against Robinhood Chain mainnet state, sending nothing. A throwaway key signs everything; the "wallet"
 // records each transaction and runs it as eth_call with balances and approvals faked by state overrides.
-// Orderly is stubbed for the perps part.   cd tools/sim && node sdk-test.mjs
+// Orderly is stubbed for the perps part.   cd test/sim && node sdk-test.mjs
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { encodeFunctionData, parseAbi, pad, toHex, parseUnits, decodeFunctionData } from "viem";
 import { Privo, Swap, Perps } from "../../src/privo-sdk.js";
@@ -74,6 +74,12 @@ const D = await import("../../src/privo-desk.js");
 const code = D.encodeQuote(tq, await taker.signTypedData(D.quoteTypedData(tq)));
 const [row] = await privo.block.check(request, [code]);
 check(row.terms.price === 180 && row.problems.some(p => /approved|holds/.test(p)), "block check reads the quote and flags an unfunded taker");
+// One settle per request, even when two calls start together (the lock is taken before the first await).
+const tqSig = D.decodeQuotes(code)[0];
+const [s1, s2] = await Promise.allSettled([privo.block.settle(request, tqSig), privo.block.settle(request, tqSig)]);
+check(s1.status === "rejected" && /checks/.test(s1.reason.message) && s2.status === "rejected" && /already being settled/.test(s2.reason.message), "two settle calls started together: the second is refused at once");
+const s3 = await privo.block.settle(request, tqSig).catch(e => e);
+check(/checks/.test(s3.message), "a settle that failed releases the lock, so it can be retried");
 
 // 4. perps with Orderly stubbed: connect registers + adds a key, order is a signed POST
 const calls = [];
