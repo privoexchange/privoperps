@@ -82,6 +82,17 @@ export const MARKETS = {
   CBRS: { address: "0x5c90450Bbb4273D7b2f17CF6917AEB237A569679", pools: [{ v: 3, fee: 3000, id: "0xD5ed9A6c9DF23f10EEcab73635912c5547fd9185" }] },
   BE:   { address: "0x822CC93fFD030293E9842c30BBD678F530701867", pools: [{ v: 3, fee: 3000, id: "0x1baD145C8F06444E0dF81c28257cd20231Bd1f16" }] },
   MRNA: { address: "0x43B07D15cE533bEc5476d70C22a78a1B2B662155", pools: [{ v: 3, fee: 3000, id: "0xB40196272A6d2EB5edF6d93bc4DC39856AD95E0E" }, { v: 3, fee: 10000, id: "0xA34d0667334074DF2d5BfD259e79E6B9cf1fA8Bf" }] },
+  // Added 26 Nov 2026: 8 more Robinhood stock tokens (same beacon proxy as TSLA) with USDG pools on Uniswap; pools checked on
+  // chain, each buy and sell simulated through the Universal Router with the PRIVO fee. CRWV and NBIS are left out: their
+  // only deep pools are v4 pools with hooks.
+  TTEQ: { address: "0x80E10255A83B257F5A8674D363F547842aa53b8e", pools: [{ v: 3, fee: 500, id: "0x59848647Aff854D7ea97A9FF955653dA178E8677" }] },
+  RDDT: { address: "0x05b37Fb53A299a1b874A619e1c4C404D52C36F4C", pools: [{ v: 3, fee: 10000, id: "0xa8744E76aED23B05F0126335E7BD38f7935D19fe" }, { v: 4, fee: 10000, ts: 200, id: "0xec481672a94cfe42e2d8c996b7eaeee8a93093d56bd01c1714341971e3f406c1" }] },
+  SNDK: { address: "0xB90A19fF0Af67f7779afF50A882A9CfF42446400", pools: [{ v: 4, fee: 10000, ts: 200, id: "0x2707cb88a6a40fa0f948f58958051ba097d6f6a3cf7f87929bd68ccc5becea24" }, { v: 3, fee: 10000, id: "0xA1e1C9519cD5ae47e9A935645E1A7b935b944559" }] },
+  SLV:  { address: "0x411eFb0E7f985935DAec3D4C3ebaEa0d0AD7D89f", pools: [{ v: 3, fee: 3000, id: "0x8cB787e6c315D464775289BaD00FDD67d53Ecb3D" }] },
+  ORCL: { address: "0xb0992820E760d836549ba69BC7598b4af75dEE03", pools: [{ v: 4, fee: 10000, ts: 200, id: "0xc2ce4784e1e72cf0221b51b30c8aaadf6c0b12863cf03ab3687854fb7b1d850a" }] },
+  GLXY: { address: "0x2D427692E928fa156ec22acfaBaFA0447C5805B7", pools: [{ v: 3, fee: 3000, id: "0xC67C2D200E0b7E5D99F4CFBede8CB09B48892f2c" }] },
+  USAR: { address: "0xd917B029C761D264c6A312BBbcDA868658eF86a6", pools: [{ v: 3, fee: 3000, id: "0x04391780F519B7d3ba59c9590459D76e23d225C4" }] },
+  LLY:  { address: "0x8005d266423c7ea827372c9c864491e5786600ea", pools: [{ v: 3, fee: 10000, id: "0xF4274130137eeE20bAD928B593d992716516CEB9" }] },
   ETH:  { kind: "crypto", native: true, address: WETH, pools: [
     { v: 3, fee: 100, id: "0x52e65B17fB6E5BA00Ed806f37Afcd2DaA50271Ca" },
     { v: 3, fee: 500, id: "0x69BfaF19C9f377BB306a89aEd9F6B07e2c1a8d9a" },
