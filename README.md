@@ -4,7 +4,7 @@ Open-source core of [PRIVO](https://privoexchange.com), a trading layer for stoc
 
 - **Spot** trades route to Uniswap pools, with a small PRIVO fee taken on chain.
 - **Perps** run on [Orderly Network](https://orderly.network) through PRIVO's builder account (`privo`), margined in USDG.
-- **The Block desk** is a sealed-quote OTC contract: takers sign quotes off chain, the maker settles the best one in a single transaction, and losing quotes never touch the chain.
+- **The Block desk** is a sealed-quote OTC contract: takers sign quotes off chain, the maker settles the best one in a single transaction, and losing quotes stay off chain unless the maker fills them (the app and SDK settle at most once per request and ask losing takers to withdraw).
 
 This repository holds the smart contract, the wallet-free client libraries the app uses, and the tests that check them against Robinhood Chain mainnet state. It does not contain the website, servers or any keys.
 
@@ -16,7 +16,7 @@ This repository holds the smart contract, the wallet-free client libraries the a
 | [`contracts/out/PrivoBlockDesk.json`](contracts/out/PrivoBlockDesk.json) | Compiled ABI and bytecode (the deployed build). |
 | [`src/privo-swap.js`](src/privo-swap.js) | Spot: quotes (Uniswap v3/v4 quoters), Permit2 signing and Universal Router calldata with the PRIVO fee (`PAY_PORTION`). |
 | [`src/privo-perps.js`](src/privo-perps.js) | Perps on Orderly: account ID, EIP-712 registration and trading-key messages, ed25519 request signing with a non-extractable WebCrypto trading key (revoked at Orderly on sign-out), market, limit, stop, TP/SL and bracket orders, per-market leverage (up to Orderly's cap: 20x stocks, up to 100x major crypto), sizing checks, position history, referral codes and rebates (Orderly referral program), vault deposits, withdrawals and PnL settlement. |
-| [`src/privo-desk.js`](src/privo-desk.js) | Block desk client: request links (stock markets, 24-hour cap), EIP-712 quotes, quote codes, checks of both tokens against the request, settle/cancel calldata, and a status check that tells a taker to withdraw a losing quote. |
+| [`src/privo-desk.js`](src/privo-desk.js) | Block desk client: request links (stock markets, 24-hour cap), EIP-712 quotes, quote codes, checks of both tokens against the request, settle/cancel calldata, a one-settlement-per-request check, and a status check (by the quote's own nonce) that tells a taker to withdraw a losing quote. Settlement logs are read from the desk's deployment block. |
 | [`src/privo-journal.js`](src/privo-journal.js) | Spot trade journal: trades from receipts or the Blockscout API, average-cost book and realized PnL per sale. |
 | [`src/privo-feed.js`](src/privo-feed.js) | Read-only market data: pool prices and candles (GeckoTerminal), Orderly perp stats, candles and max leverage per market. |
 | [`src/privo-sdk.js`](src/privo-sdk.js) | SDK for bots and AI agents: the `Privo` class over the modules above (spot buy/sell, perps connect/deposit/order, block request/answer/check/settle, read API). |
@@ -77,14 +77,15 @@ Node 22 or newer (WebCrypto Ed25519).
 
 ```bash
 npm install
-npm test                      # journal, perps messages, sizing, trading-key handling and the SDK (offline + Orderly public API)
+npm test                      # offline only: journal, perps order messages and trading-key handling (Orderly stubbed)
+npm run test:chain            # reads live data: perps sizing (Orderly public API), the SDK, spot swaps and Orderly accounts
 node test/blockdesk/desk-test.mjs      # contract on mainnet state: settle, fees, signatures, nonces
 node test/blockdesk/ui-core-test.mjs   # client library against the deployed contract
 node test/blockdesk/deploy-test.mjs    # deployed bytecode matches this build
 node test/sim/livetest.mjs             # spot swaps with the PRIVO fee for every market
 node test/sim/perpstest.mjs            # Orderly account IDs, vault deposits, key and request signing
 node test/sim/perps-pro-test.mjs       # stop, TP/SL, bracket, post-only/IOC and websocket auth (Orderly stubbed)
-node test/sim/perps-key-test.mjs       # non-extractable trading key, old-key migration, revoke on sign-out (Orderly stubbed)
+node test/sim/perps-key-test.mjs       # non-extractable trading key, old keys revoked for every wallet, hex keys memory-only, revoke on sign-out (Orderly stubbed)
 ```
 
 The chain tests read from a public Robinhood Chain RPC and use throwaway keys. Nothing is broadcast.

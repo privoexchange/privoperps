@@ -28,13 +28,15 @@ export class Privo {
    * @param {object} o
    * @param {import("viem").WalletClient} [o.wallet]  signs transactions and messages (needed for trading, not for reads)
    * @param {import("viem").PublicClient} [o.client]  reads chain state (default: PRIVO's RPC list)
+   * @param {import("viem").PublicClient} [o.logClient]  reads Block desk settlement logs (default: Robinhood Chain's RPC)
    * @param {{orderlyKey: string, secret: string}} [o.perpsKey]  a trading key saved from perps.connect()
    * @param {number} [o.slippageBps]  spot slippage limit, 1..500 (default 50 = 0.5%)
    * @param {string} [o.api]  read API base (default https://privoexchange.com/api/v1)
    */
-  constructor({ wallet = null, client = null, perpsKey = null, slippageBps = 50, api = API } = {}) {
+  constructor({ wallet = null, client = null, logClient = null, perpsKey = null, slippageBps = 50, api = API } = {}) {
     this.wallet = wallet;
     this.client = client || Swap.makeClient();
+    this.logClient = logClient || Desk.makeLogClient();
     this.api = api;
     this.slippageBps = slippageBps;
     this._key = perpsKey;
@@ -147,7 +149,8 @@ export class Privo {
   // Maker: checks every quote code against the request and the chain; best valid quote first.
   async _blockCheck(request, codes) {
     const qs = Desk.decodeQuotes(Array.isArray(codes) ? codes.join(" ") : codes);
-    const rows = await Promise.all(qs.map(async x => ({ ...x, ...(await Desk.checkQuote(this.client, request, x)) })));
+    const [rows, done] = await Promise.all([Promise.all(qs.map(async x => ({ ...x, ...(await Desk.checkQuote(this.client, request, x)) }))), Desk.requestSettled(this.logClient, request.id)]);
+    if (done) for (const r of rows) { r.ok = false; r.problems = ["This request already settled", ...r.problems]; }
     const better = (a, b) => request.side === "sell" ? b.terms.price - a.terms.price : a.terms.price - b.terms.price;
     return rows.sort((a, b) => (a.ok === b.ok ? better(a, b) : a.ok ? -1 : 1));
   }
@@ -155,6 +158,8 @@ export class Privo {
   async _blockSettle(request, quote) {
     const c = await Desk.checkQuote(this.client, request, quote);
     if (!c.ok) throw new Error("Quote failed its checks: " + c.problems.join(", "));
+    // The contract allows more than one settle per request; the SDK sends at most one.
+    if (await Desk.requestSettled(this.logClient, request.id)) throw new Error("This request already settled. Only one quote can fill it.");
     const ap = Desk.makerApproval(quote.q, request.side);
     if (await Desk.needsApproval(this.client, this._need(), ap.token, ap.amount)) await this._send(Desk.approveTx(ap.token, ap.amount));
     return this._send(Desk.settleTx(quote));

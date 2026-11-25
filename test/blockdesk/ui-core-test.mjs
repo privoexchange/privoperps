@@ -3,7 +3,7 @@
 // from the maker against the real contract address.
 import { createPublicClient, http, encodeFunctionData, parseAbi, pad, toHex, parseUnits } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { DESK, newRequest, requestLink, parseRequest, buildQuote, quoteTypedData, encodeQuote, decodeQuotes, checkQuote, quoteTerms, settleTx, makerApproval, deskMarket, quoteStatus } from "../../src/privo-desk.js";
+import { DESK, newRequest, requestLink, parseRequest, buildQuote, quoteTypedData, encodeQuote, decodeQuotes, checkQuote, quoteTerms, settleTx, makerApproval, deskMarket, quoteStatus, settlementsOf, requestSettled, DESK_FROM_BLOCK } from "../../src/privo-desk.js";
 import { USDG, MARKETS } from "../../src/privo-swap.js";
 
 const c = createPublicClient({ transport: http("https://robinhood-rpc.publicnode.com", { timeout: 30000, retryCount: 2 }) });
@@ -27,7 +27,7 @@ async function give(token, who, amount, spender) {
 
 // Maker wants to SELL 3 NVDA, limit 140 USDG.
 const req = newRequest({ maker: maker.address, side: "sell", sym: "NVDA", qty: "3", limit: "140", hours: 4 });
-const link = requestLink(req, "https://privoexchange.com/app");
+const link = requestLink(req, "https://privo-exchange.netlify.app/app.html");
 const back = parseRequest(link);
 check(back.id === req.id && back.maker === maker.address && back.qty === "3" && link.length < 600, `request link round-trips (${link.length} chars)`);
 
@@ -103,12 +103,28 @@ check(btc, "a BTC request is refused (8-decimal cbBTC would be sized as 18)");
 let proto = false; try { parseRequest(requestLink({ ...req, sym: "__proto__" })); } catch { proto = true; }
 check(proto, "a link with sym __proto__ is refused");
 
-// Losing quotes: once the request settles with another taker, the app sees this quote as "lost" (withdraw it).
-const settledBy = who => ({ readContract: async () => false, getLogs: async () => [{ args: { taker: who }, transactionHash: "0x" + "1".repeat(64) }] });
+// Losing quotes: once the request settles, by anyone, an unused quote is "lost" (withdraw it). Decided by the quote's own nonce.
+const HEAD = DESK_FROM_BLOCK + 12_000_000n, spans = [];
+const fakeChain = ({ used = false, settled = [] }) => ({
+  readContract: async () => used, getBlockNumber: async () => HEAD,
+  getLogs: async ({ fromBlock, toBlock }) => { spans.push([fromBlock, toBlock]); return toBlock === HEAD ? settled.map(x => ({ args: x, transactionHash: "0x" + "1".repeat(64) })) : []; },
+});
+const leg = q => ({ taker: q.taker, makerAmount: q.makerAmount, takerAmount: q.takerAmount });
 const mineQ = buildQuote(back, takers[1].address, "150");
-check((await quoteStatus(settledBy(takers[0].address), mineQ)) === "lost", "quote is 'lost' after the request settled with another taker");
-check((await quoteStatus({ readContract: async () => false, getLogs: async () => [] }, mineQ)) === "open", "quote is 'open' before anyone settles");
-check((await quoteStatus({ readContract: async () => true, getLogs: async () => [] }, mineQ)) === "done", "a cancelled quote is 'done'");
+check((await quoteStatus(fakeChain({ settled: [leg(buildQuote(back, takers[0].address, "151"))] }), mineQ)) === "lost", "quote is 'lost' after the request settled with another taker");
+check((await quoteStatus(fakeChain({}), mineQ)) === "open", "quote is 'open' before anyone settles");
+check((await quoteStatus(fakeChain({ used: true }), mineQ)) === "done", "a cancelled quote is 'done'");
+// N-3: the same taker re-quotes; one of the two settles. The other one is still unused, so it is "lost", not "open".
+const reQ = buildQuote(back, takers[1].address, "152");
+check((await quoteStatus(fakeChain({ settled: [leg(reQ)] }), mineQ)) === "lost", "N-3: the taker's other quote is 'lost' when their re-quote won");
+check((await quoteStatus(fakeChain({ used: true, settled: [leg(mineQ)] }), mineQ)) === "won", "the quote that settled the request is 'won'");
+// Logs start at the desk's deployment block and go in windows of at most 5M blocks (public RPCs cap the range).
+spans.length = 0; await settlementsOf(fakeChain({}), back.id);
+check(spans[0][0] === DESK_FROM_BLOCK && spans.at(-1)[1] === HEAD && spans.every(([x, y]) => y - x < 5_000_000n), "settlementsOf reads from the deployment block in <= 5M-block windows, never from block 0");
+spans.length = 0; await settlementsOf(fakeChain({}), back.id, 0n);
+check(spans[0][0] === DESK_FROM_BLOCK, "a fromBlock of 0 is raised to the deployment block");
+// L-1: one settlement per request, enforced by the app and the SDK.
+check((await requestSettled(fakeChain({ settled: [leg(reQ)] }), back.id))?.taker === takers[1].address && (await requestSettled(fakeChain({}), back.id)) === null, "requestSettled finds the settlement that closed a request");
 
 // L-1: requests and quotes cannot outlive 24 hours, and a quote cannot outlive its request.
 let long = false; try { newRequest({ maker: maker.address, side: "sell", sym: "NVDA", qty: "1", hours: 48 }); } catch { long = true; }

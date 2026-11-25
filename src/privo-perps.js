@@ -78,10 +78,10 @@ const unhex = h => new Uint8Array(h.match(/../g).map(x => parseInt(x, 16)));
 const b64url = u8 => btoa(String.fromCharCode(...u8)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
 // A trading key is { orderlyKey, ck } where ck is a NON-extractable WebCrypto Ed25519 key: page scripts can ask it to
-// sign but can never read the secret out. Browsers without WebCrypto Ed25519 fall back to { orderlyKey, secret } (hex).
+// sign but can never read the secret out. Browsers without WebCrypto Ed25519 fall back to { orderlyKey, secret } (hex),
+// which is kept in memory for the tab only (see key storage below).
 const ED = { name: "Ed25519" };
 const subtle = () => globalThis.crypto?.subtle;
-const PKCS8_ED25519 = "302e020100300506032b657004220420"; // PKCS#8 prefix for a raw 32-byte Ed25519 seed
 export async function newOrderlyKey({ webcrypto = true } = {}) {
   if (webcrypto) {
     try {
@@ -305,12 +305,14 @@ export function depositTx(address, amount, fee, broker) {
 }
 
 /* ---------- key storage (per wallet, this browser) ---------- */
-// WebCrypto keys live in IndexedDB (a CryptoKey can be stored there but not read out). Old hex keys from localStorage
-// are moved into a non-extractable CryptoKey on first load and the plain copy is deleted. If IndexedDB is unavailable
-// (private windows), the key is kept in memory for this tab only.
-const KEY_PREFIX = "privo-orderly-key:";
+// Only non-extractable WebCrypto keys are kept across visits, in IndexedDB (a CryptoKey can be stored there but not
+// read out). A plain hex key (browsers without WebCrypto Ed25519, or no IndexedDB) lives in memory for this tab only.
+// Old hex keys that earlier versions kept in localStorage, for any wallet, are revoked at Orderly and deleted: a key
+// that once sat in localStorage may have been read, so it is replaced rather than moved (HEY Research review, L-2).
+const KEY_PREFIX = "privo-orderly-key:", REVOKE_PREFIX = "privo-orderly-revoke:";
 const MEM = new Map();
 const fresh = k => (k && k.expires > Date.now() + 60000 ? k : null);
+const ls = () => { try { return globalThis.localStorage || null; } catch { return null; } };
 function idb(mode, fn) {
   return new Promise((res, rej) => {
     if (!globalThis.indexedDB) return rej(new Error("no IndexedDB"));
@@ -324,32 +326,48 @@ function idb(mode, fn) {
     };
   });
 }
-async function migrate(acctId, k) {
-  try {
-    const seed = unhex(k.secret);
-    if ("ed25519:" + base58(await ed.getPublicKeyAsync(seed)) !== k.orderlyKey) return k;
-    const ck = await subtle().importKey("pkcs8", unhex(PKCS8_ED25519 + k.secret), ED, false, ["sign"]);
-    const moved = { ck, orderlyKey: k.orderlyKey, expires: k.expires };
-    await idb("readwrite", st => st.put(moved, acctId));
-    try { localStorage.removeItem(KEY_PREFIX + acctId); } catch {}
-    return moved;
-  } catch { return k; }
+// Public keys (never secrets) still to be removed at Orderly; the account's next valid key removes them.
+const pendingOf = acctId => { try { return JSON.parse(ls()?.getItem(REVOKE_PREFIX + acctId) || "[]"); } catch { return []; } };
+const setPending = (acctId, list) => { try { list.length ? ls()?.setItem(REVOKE_PREFIX + acctId, JSON.stringify([...new Set(list)])) : ls()?.removeItem(REVOKE_PREFIX + acctId); } catch {} };
+// Revokes and deletes every old hex key in localStorage, for every wallet this browser has used. Each key signs its own
+// removal; if Orderly cannot be reached, the plain copy is deleted anyway and the public key is queued for removal.
+export async function sweepLegacyKeys() {
+  const store = ls(); if (!store) return 0;
+  const found = [];
+  for (let i = 0; i < store.length; i++) { const n = store.key(i); if (n?.startsWith(KEY_PREFIX)) found.push(n); }
+  for (const name of found) {
+    const acctId = name.slice(KEY_PREFIX.length);
+    let k = null; try { k = JSON.parse(store.getItem(name) || "null"); } catch {}
+    let gone = false;
+    if (k?.secret && k.orderlyKey && fresh(k)) { try { await priv(k, acctId, "POST", "/v1/client/remove_orderly_key", { orderly_key: k.orderlyKey }); gone = true; } catch {} }
+    try { store.removeItem(name); } catch {}
+    if (k?.orderlyKey && fresh(k) && !gone) setPending(acctId, [...pendingOf(acctId), k.orderlyKey]);
+  }
+  return found.length;
+}
+// With a valid key for the account, removes the keys queued by sweepLegacyKeys.
+export async function revokePending(key, acctId) {
+  const left = [];
+  for (const orderlyKey of pendingOf(acctId)) {
+    if (orderlyKey === key.orderlyKey) continue;
+    try { await priv(key, acctId, "POST", "/v1/client/remove_orderly_key", { orderly_key: orderlyKey }); } catch { left.push(orderlyKey); }
+  }
+  setPending(acctId, left);
 }
 export async function loadKey(acctId) {
   const mem = fresh(MEM.get(acctId)); if (mem) return mem;
-  try { const k = fresh(await idb("readonly", st => st.get(acctId))); if (k) return k; } catch {}
-  let old = null; try { old = fresh(JSON.parse(localStorage.getItem(KEY_PREFIX + acctId) || "null")); } catch {}
-  return old?.secret ? migrate(acctId, old) : null;
+  try { const k = fresh(await idb("readonly", st => st.get(acctId))); if (k?.ck) return k; } catch {}
+  return null;
 }
 export async function saveKey(acctId, key, expires) {
   const k = { ...key, expires };
   MEM.set(acctId, k);
-  if (k.ck) { try { await idb("readwrite", st => st.put({ ck: k.ck, orderlyKey: k.orderlyKey, expires }, acctId)); } catch {} return; }
-  try { localStorage.setItem(KEY_PREFIX + acctId, JSON.stringify(k)); } catch {}
+  if (k.ck) { try { await idb("readwrite", st => st.put({ ck: k.ck, orderlyKey: k.orderlyKey, expires }, acctId)); } catch {} }
+  // a hex key is never written anywhere: it stays in this tab's memory
 }
 export async function forgetKey(acctId) {
   MEM.delete(acctId);
-  try { localStorage.removeItem(KEY_PREFIX + acctId); } catch {}
+  try { ls()?.removeItem(KEY_PREFIX + acctId); } catch {}
   try { await idb("readwrite", st => st.delete(acctId)); } catch {}
 }
 // Sign-out: ask Orderly to drop the key (it signs its own removal), then delete the local copy either way.

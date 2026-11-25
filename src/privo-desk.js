@@ -1,11 +1,13 @@
 // PRIVO Block desk on Robinhood Chain: private request links, signed quotes, checks and settle calldata
 // for the deployed PrivoBlockDesk contract. Wallet-free, runs in the browser and in Node.
-import { parseAbi, encodeFunctionData, getAddress, isAddress, recoverTypedDataAddress, toHex, parseUnits, formatUnits } from "viem";
+import { parseAbi, encodeFunctionData, getAddress, isAddress, recoverTypedDataAddress, toHex, parseUnits, formatUnits, createPublicClient, http } from "viem";
 import { USDG, MARKETS, STOCK_DECIMALS } from "./privo-swap.js";
 
 // Deployed 19 Nov 2026 via CREATE2; on-chain code checked against contracts/out/PrivoBlockDesk.json.
 export const DESK = "0x8D94fCe2925EBA2448DA28f9461c8b644c26b8e7";
 export const FEE_BIPS = 10n;
+// First block of 18 Nov 2026 (UTC); the desk was deployed later that day, so no Settled event can be older.
+export const DESK_FROM_BLOCK = 116981681n;
 export const DESK_ABI = parseAbi([
   "function settle((address maker,address taker,address makerToken,uint256 makerAmount,address takerToken,uint256 takerAmount,bytes32 blockId,uint256 nonce,uint256 deadline) q, bytes takerSignature)",
   "function cancel(uint256 nonce)",
@@ -149,20 +151,39 @@ export async function checkQuote(client, r, { q, sig }) {
 
 /* ---------- after settlement: a losing quote stays fillable until its deadline unless the taker cancels it ---------- */
 const SETTLED = parseAbi(["event Settled(bytes32 indexed blockId, address indexed maker, address indexed taker, address makerToken, uint256 makerAmount, address takerToken, uint256 takerAmount, address feeToken, uint256 fee)"]);
-// Settlements of one request since fromBlock: [{ taker, tx }].
-export async function settlementsOf(client, blockId, fromBlock = 0n) {
-  const logs = await client.getLogs({ address: DESK, event: SETTLED[0], args: { blockId }, fromBlock: BigInt(fromBlock), toBlock: "latest" });
-  return logs.map(l => ({ taker: getAddress(l.args.taker), tx: l.transactionHash }));
+// Settlements of one request since fromBlock (never before the desk existed): [{ taker, makerAmount, takerAmount, tx }].
+// Logs are read in windows, since public RPCs cap how many blocks one getLogs may span.
+const LOG_WINDOW = 5_000_000n;
+// Settled events are read from Robinhood Chain's own RPC, which serves log ranges (some public RPCs refuse them).
+export const makeLogClient = () => createPublicClient({ transport: http("https://rpc.mainnet.chain.robinhood.com", { retryCount: 1, timeout: 20000 }) });
+export async function settlementsOf(client, blockId, fromBlock = DESK_FROM_BLOCK) {
+  let from = BigInt(fromBlock) > DESK_FROM_BLOCK ? BigInt(fromBlock) : DESK_FROM_BLOCK;
+  const last = await client.getBlockNumber(), out = [];
+  for (; from <= last; from += LOG_WINDOW) {
+    const to = from + LOG_WINDOW - 1n < last ? from + LOG_WINDOW - 1n : last;
+    const logs = await client.getLogs({ address: DESK, event: SETTLED[0], args: { blockId }, fromBlock: from, toBlock: to });
+    for (const l of logs) out.push({ taker: getAddress(l.args.taker), makerAmount: l.args.makerAmount, takerAmount: l.args.takerAmount, tx: l.transactionHash });
+  }
+  return out;
 }
-// For a taker's own quote: "open" (not settled yet), "won" (settled with this quote), "lost" (the request settled with
-// someone else and this quote can still be filled: cancel it), "done" (used, cancelled or expired).
-export async function quoteStatus(client, q, fromBlock = 0n) {
+// For a taker's own quote, decided by the quote's own nonce:
+// "open" (the request has not settled), "won" (this quote settled it), "lost" (the request settled, by anyone, and this
+// quote is still unused: cancel it), "done" (used or cancelled while the request is open, or expired).
+export async function quoteStatus(client, q, fromBlock = DESK_FROM_BLOCK) {
   if (q.deadline <= BigInt(now())) return "done";
-  const used = await client.readContract({ address: DESK, abi: DESK_ABI, functionName: "nonceUsed", args: [q.taker, q.nonce] });
-  const s = await settlementsOf(client, q.blockId, fromBlock);
-  if (s.some(x => x.taker === getAddress(q.taker))) return used ? "won" : "open";
-  if (used) return "done";
-  return s.length ? "lost" : "open";
+  const [used, s] = await Promise.all([
+    client.readContract({ address: DESK, abi: DESK_ABI, functionName: "nonceUsed", args: [q.taker, q.nonce] }),
+    settlementsOf(client, q.blockId, fromBlock),
+  ]);
+  if (!s.length) return used ? "done" : "open";
+  if (!used) return "lost";
+  const me = getAddress(q.taker);
+  return s.some(x => x.taker === me && x.makerAmount === q.makerAmount && x.takerAmount === q.takerAmount) ? "won" : "done";
+}
+// The settlement that already closed this request, or null. The contract cannot stop a second settle for the same
+// request, so the app and the SDK refuse to send one.
+export async function requestSettled(client, blockId) {
+  return (await settlementsOf(client, blockId))[0] || null;
 }
 
 /* ---------- transactions ---------- */

@@ -21,7 +21,7 @@ A sealed-quote OTC desk for trades that would move a thin pool.
 
    The quote travels back to the maker as a code, off chain.
 3. **The maker settles the best quote** with `settle(quote, signature)`. Both legs move in **one transaction**: all or nothing.
-4. **Losing quotes stay off chain unless the maker fills them.** A signed quote is valid until its deadline (at most 24 hours), and the contract keeps one nonce per taker, not per request, so a maker could still settle a losing quote later at that taker's signed price. The app tracks this: once a request settles with another quote, it asks each losing taker to withdraw theirs with `cancel(nonce)`, and takers can sign quotes that end sooner than the request.
+4. **Losing quotes stay off chain unless the maker fills them.** A signed quote is valid until its deadline (at most 24 hours), and the contract keeps one nonce per taker, not per request, so the contract alone does not stop a maker from settling a second quote for the same request. PRIVO's app and SDK send at most one settlement per request: they read the request's `Settled` events and refuse to settle again. Takers are protected on their side too: once a request has any settlement, every quote of theirs that is still unused reads as lost (decided by the quote's own nonce, so a re-quote by the same taker is covered), and the app asks them to withdraw it with `cancel(nonce)`. Takers can also sign quotes that end sooner than the request. Only a one-settlement-per-request rule in a future desk version would close this on chain; the deployed contract cannot be upgraded.
 
 ## Rules enforced by the contract
 

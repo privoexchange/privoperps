@@ -1,6 +1,6 @@
 {
   "name": "privoperps",
-  "version": "1.1.0",
+  "version": "1.3.0",
   "description": "PRIVO SDK and core on Robinhood Chain: spot swaps through Uniswap with the PRIVO fee, Orderly perps, sealed OTC block trades and the Block desk contract. Every trade is signed by your own wallet.",
   "type": "module",
   "license": "MIT",
@@ -24,9 +24,9 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node test/sim/journal-test.mjs && node test/sim/perps-trade-test.mjs && node test/sim/perps-pro-test.mjs && node test/sim/perps-key-test.mjs && node test/sim/sdk-test.mjs",
+    "test": "node test/sim/journal-test.mjs && node test/sim/perps-pro-test.mjs && node test/sim/perps-key-test.mjs",
     "test:desk": "node test/blockdesk/desk-test.mjs && node test/blockdesk/ui-core-test.mjs && node test/blockdesk/deploy-test.mjs",
-    "test:chain": "node test/sim/livetest.mjs && node test/sim/perpstest.mjs",
+    "test:chain": "node test/sim/perps-trade-test.mjs && node test/sim/sdk-test.mjs && node test/sim/livetest.mjs && node test/sim/perpstest.mjs",
     "compile": "node test/blockdesk/compile.mjs"
   },
   "dependencies": {
