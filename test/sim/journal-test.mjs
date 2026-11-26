@@ -1,7 +1,7 @@
 // Spot journal: receipt parsing, Blockscout backfill grouping, and average-cost PnL.
 //   node test/sim/journal-test.mjs
 import { encodeEventTopics, encodeAbiParameters, parseAbiItem, parseUnits } from "viem";
-import { fromReceipt, backfill, book, merge } from "../../src/privo-journal.js";
+import { fromReceipt, backfill, book, merge, basketPositions } from "../../src/privo-journal.js";
 import { USDG, WETH, MARKETS } from "../../src/privo-swap.js";
 
 let fail = 0;
@@ -45,6 +45,38 @@ ok(got.length === 1 && got[0].sym === "NVDA" && got[0].side === "buy" && near(go
 ok(urls.length === 2 && urls[1].includes("block_number=5"), "backfill follows Blockscout pages");
 const j = merge({ trades: [buy] }, [buy, sell]);
 ok(j.trades.length === 2, "merge skips trades already in the journal");
+
+// basket positions: a basket buy, less the basket sales linked to it
+const bk = [
+  { hash: "0xB1", ts: 10, sym: "TSLA", side: "buy", qty: 1, usdg: 60 }, { hash: "0xB1", ts: 10, sym: "NVDA", side: "buy", qty: 2, usdg: 40 },
+  { hash: "0xS1", ts: 20, sym: "TSLA", side: "sell", qty: 0.5, usdg: 33 }, { hash: "0xS1", ts: 20, sym: "NVDA", side: "sell", qty: 1, usdg: 19 },
+  { hash: "0xS2", ts: 30, sym: "TSLA", side: "sell", qty: 0.25, usdg: 20 }, { hash: "0xS2", ts: 30, sym: "NVDA", side: "sell", qty: 0.5, usdg: 10 },
+  { hash: "0x99", ts: 40, sym: "TSLA", side: "buy", qty: 3, usdg: 180 },
+];
+const ps = basketPositions(bk, { "0xs1": "0xb1" });
+const t1 = ps[0]?.legs.find(l => l.sym === "TSLA"), n1 = ps[0]?.legs.find(l => l.sym === "NVDA");
+ok(ps.length === 1 && ps[0].sales === 1 && near(t1.qty, 0.5) && near(t1.basis, 30) && near(t1.realized, 3) && near(n1.qty, 1) && near(n1.basis, 20) && near(n1.realized, -1),
+  "basket positions: half sold through a linked sale leaves half the cost and realizes +3 and -1; unlinked sales and single buys are not baskets");
+const all = basketPositions(bk, { "0xS1": "0xB1", "0xs2": "0xb1" });
+ok(near(all[0].legs[0].qty, 0.25) && all[0].sales === 2, "a second linked sale takes from what is left");
+const closed = basketPositions([...bk.slice(0, 2), { hash: "0xS3", ts: 50, sym: "TSLA", side: "sell", qty: 1, usdg: 70 }, { hash: "0xS3", ts: 50, sym: "NVDA", side: "sell", qty: 2.0000000001, usdg: 41 }], { "0xs3": "0xb1" });
+ok(closed[0].legs.every(l => l.qty === 0 && l.basis === 0) && Math.abs(closed[0].legs[0].realized + closed[0].legs[1].realized - 11) < 1e-6, "selling everything closes the basket; selling more than it held realizes only its share");
+
+// backfill: a basket sale reads the whole transaction to split the USDG by leg
+const router = "0x8876789976decbfcbbbe364623c63652db8c0904", pA = "0x00000000000000000000000000000000000000a1", pB = "0x00000000000000000000000000000000000000b2";
+const it = (h, i, tok, from, to, v) => ({ transaction_hash: h, log_index: i, timestamp: "2026-11-26T10:00:00Z", token: { address_hash: tok }, total: { value: String(v) }, from: { hash: from }, to: { hash: to } });
+const wallet = [it("0xc1", 1, MARKETS.TSLA.address, me, router, parseUnits("0.1", 18)), it("0xc1", 4, MARKETS.NVDA.address, me, router, parseUnits("0.2", 18)), it("0xc1", 9, USDG.address, router, me, 59_910000n)];
+const full = [...wallet.slice(0, 1), it("0xc1", 2, USDG.address, pA, router, 40_000000n), it("0xc1", 3, MARKETS.TSLA.address, router, pA, parseUnits("0.1", 18)),
+  wallet[1], it("0xc1", 5, USDG.address, pB, router, 20_000000n), it("0xc1", 6, MARKETS.NVDA.address, router, pB, parseUnits("0.2", 18)),
+  it("0xc1", 8, USDG.address, router, fee, 90000n), wallet[2]];
+const urls2 = [];
+const fake2 = async u => { urls2.push(u); return { ok: true, json: async () => (u.includes("/transactions/0xc1/") ? { items: full } : { items: wallet, next_page_params: null }) }; };
+const bs = await backfill(me, { fetchFn: fake2 });
+const bt = bs.find(e => e.sym === "TSLA"), bn = bs.find(e => e.sym === "NVDA");
+ok(bs.length === 2 && bt.side === "sell" && near(bt.usdg, 39.94) && bn.side === "sell" && near(bn.usdg, 19.97) && urls2.some(u => u.includes("/transactions/0xc1/token-transfers")),
+  "backfill: a basket sale is split by what each pool paid (39.94 + 19.97 = 59.91 received)");
+const fake3 = async u => (u.includes("/transactions/") ? { ok: false, status: 503 } : { ok: true, json: async () => ({ items: wallet, next_page_params: null }) });
+ok((await backfill(me, { fetchFn: fake3 })).length === 0, "backfill: if the transaction cannot be read, the sale is left out rather than booked wrongly");
 
 console.log(fail ? `\n${fail} check(s) failed` : "\nall checks passed");
 process.exit(fail ? 1 : 0);

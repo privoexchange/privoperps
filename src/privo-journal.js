@@ -2,7 +2,7 @@
 // Sources: the receipt of trades made in this app, plus a backfill from Blockscout's token-transfer API.
 // Stored in this browser only (localStorage), per wallet. Wallet-free and testable in Node.
 import { formatUnits, getAddress, parseAbiItem, decodeEventLog } from "viem";
-import { CONFIG, USDG, WETH, MARKETS, decimalsOf, isNative } from "./privo-swap.js";
+import { CONFIG, ADDR, USDG, WETH, MARKETS, decimalsOf, isNative } from "./privo-swap.js";
 
 const KEY = a => "privo-spot-journal:" + a.toLowerCase();
 const EXPLORER_API = "https://robinhoodchain.blockscout.com/api/v2";
@@ -72,7 +72,33 @@ export function basketEntries(transfers, addr, { hash, ts = Date.now() }) {
     return entry({ hash, ts, sym: l.sym, usdgOut: l.usdg + f, usdgIn: 0n, tokOut: 0n, tokIn: l.tokIn });
   });
 }
-// ERC-20 transfers of a receipt, in log order, for basketEntries.
+// Basket sales: one transaction that sells several markets for USDG. In log order, each leg is that market's token leaving
+// the wallet followed by the USDG its pool pays into the router; then the router pays the PRIVO fee and sweeps the rest to
+// the wallet. The USDG received is shared over the legs by what each pool paid. Returns one sell per market, or null when
+// the transaction is not a basket sale.
+export function basketSellEntries(transfers, addr, { hash, ts = Date.now() }) {
+  const me = addr.toLowerCase(), usdg = USDG.address.toLowerCase(), router = ADDR.ROUTER.toLowerCase();
+  const legs = [];
+  let net = 0n;
+  for (const t of transfers) {
+    if (t.tok === usdg) {
+      if (t.from === me) return null; // the wallet paid USDG: not a sale
+      if (t.to === me) net += t.v;
+      else if (t.to === router && legs.length) legs.at(-1).gross += t.v;
+    } else if (bySymbol[t.tok] && !isNative(bySymbol[t.tok]) && t.from === me) legs.push({ sym: bySymbol[t.tok], tokOut: t.v, gross: 0n });
+  }
+  if (legs.length < 2 || new Set(legs.map(l => l.sym)).size !== legs.length || net <= 0n || legs.some(l => l.gross <= 0n)) return null;
+  const total = legs.reduce((a, l) => a + l.gross, 0n);
+  let left = net;
+  return legs.map((l, i) => {
+    const u = i === legs.length - 1 ? left : net * l.gross / total;
+    left -= u;
+    return entry({ hash, ts, sym: l.sym, usdgOut: 0n, usdgIn: u, tokOut: l.tokOut, tokIn: 0n });
+  });
+}
+// A basket buy or a basket sale, as one trade per market; null for anything else.
+export const multiEntries = (transfers, addr, opts) => basketEntries(transfers, addr, opts) || basketSellEntries(transfers, addr, opts);
+// ERC-20 transfers of a receipt, in log order, for basketEntries and basketSellEntries.
 export function receiptTransfers(rc) {
   const out = [];
   for (const l of rc.logs) {
@@ -109,8 +135,21 @@ export async function backfill(addr, { pages = 6, fetchFn = fetch } = {}) {
   const out = [];
   for (const t of Object.values(tx)) {
     const u = t.legs.USDG; if (!u) continue;
-    const basket = basketEntries(t.list.sort((a, b) => a.i - b.i), addr, { hash: t.hash, ts: t.ts });
+    const basket = multiEntries(t.list.sort((a, b) => a.i - b.i), addr, { hash: t.hash, ts: t.ts });
     if (basket) { out.push(...basket); continue; }
+    const sold = Object.entries(t.legs).filter(([s, l]) => s !== "USDG" && l.out > l.in);
+    if (sold.length >= 2 && u.in > 0n) {
+      // A basket sale: the wallet's own feed has no pool payments, so read the whole transaction's transfers to split
+      // the USDG by leg. If that fails, leave the transaction out rather than book it wrongly.
+      try {
+        const r = await fetchFn(`${EXPLORER_API}/transactions/${t.hash}/token-transfers?type=ERC-20`);
+        const items = r.ok ? (await r.json()).items || [] : [];
+        const list = items.map(it => ({ i: Number(it.log_index ?? 0), tok: (it.token?.address_hash || it.token?.address || "").toLowerCase(), from: (it.from?.hash || "").toLowerCase(), to: (it.to?.hash || "").toLowerCase(), v: BigInt(it.total?.value || 0) }));
+        const es = basketSellEntries(list.sort((a, b) => a.i - b.i), addr, { hash: t.hash, ts: t.ts });
+        if (es) out.push(...es);
+      } catch { /* Blockscout busy */ }
+      continue;
+    }
     for (const [sym, l] of Object.entries(t.legs)) {
       if (sym === "USDG") continue;
       const e = entry({ hash: t.hash, ts: t.ts, sym, usdgOut: u.out, usdgIn: u.in, tokOut: l.out, tokIn: l.in });
@@ -118,6 +157,37 @@ export async function backfill(addr, { pages = 6, fetchFn = fetch } = {}) {
     }
   }
   return out;
+}
+
+// Baskets held: every basket buy in the journal (one transaction buying several markets), less the basket sales linked
+// to it. links: { saleHash: buyHash }, kept by the app that sent the sale. Each leg keeps what is left of the bought
+// quantity, its cost (pro rata) and what linked sales realized. Fees are inside the USDG amounts.
+// Returns [{ id, ts, sales, legs: [{ sym, bought, cost, qty, basis, proceeds, realized }] }], oldest first.
+export function basketPositions(trades, links = {}) {
+  const byHash = new Map(), out = new Map();
+  for (const t of [...trades].sort((a, b) => a.ts - b.ts)) {
+    const h = t.hash.toLowerCase();
+    if (!byHash.has(h)) byHash.set(h, []);
+    byHash.get(h).push(t);
+  }
+  const lk = Object.fromEntries(Object.entries(links).map(([k, v]) => [k.toLowerCase(), String(v).toLowerCase()]));
+  for (const [h, ts] of byHash) {
+    if (ts.length < 2) continue;
+    if (ts.every(t => t.side === "buy")) {
+      out.set(h, { id: h, ts: ts[0].ts, sales: 0, legs: ts.map(t => ({ sym: t.sym, bought: t.qty, cost: t.usdg, qty: t.qty, basis: t.usdg, proceeds: 0, realized: 0 })) });
+    } else if (ts.every(t => t.side === "sell") && out.has(lk[h])) {
+      const b = out.get(lk[h]);
+      for (const t of ts) {
+        const l = b.legs.find(x => x.sym === t.sym);
+        if (!l || !(l.qty > 0)) continue;
+        const q = Math.min(t.qty, l.qty), c = l.basis * q / l.qty, p = t.usdg * q / t.qty;
+        l.qty -= q; l.basis -= c; l.proceeds += p; l.realized += p - c;
+        if (l.qty <= l.bought * 1e-9) { l.qty = 0; l.basis = 0; }
+      }
+      b.sales++;
+    }
+  }
+  return [...out.values()];
 }
 
 // Average-cost book per market. Fees are inside the USDG amounts, so PnL is after PRIVO's fee.

@@ -133,7 +133,7 @@ const MSG_SENDER = "0x0000000000000000000000000000000000000001";
 const ADDRESS_THIS = "0x0000000000000000000000000000000000000002";
 const CONTRACT_BALANCE = 1n << 255n;
 const MAX_UINT160 = (1n << 160n) - 1n;
-const CMD = { V3_SWAP_EXACT_IN: 0x00, PERMIT2_TRANSFER_FROM: 0x02, SWEEP: 0x04, PAY_PORTION: 0x06, PERMIT2_PERMIT: 0x0a, WRAP_ETH: 0x0b, UNWRAP_WETH: 0x0c, V4_SWAP: 0x10 };
+const CMD = { V3_SWAP_EXACT_IN: 0x00, PERMIT2_TRANSFER_FROM: 0x02, PERMIT2_PERMIT_BATCH: 0x03, SWEEP: 0x04, PAY_PORTION: 0x06, PERMIT2_PERMIT: 0x0a, WRAP_ETH: 0x0b, UNWRAP_WETH: 0x0c, V4_SWAP: 0x10 };
 const ACT = { SWAP_EXACT_IN_SINGLE: 0x06, SETTLE: 0x0b, TAKE: 0x0e, TAKE_ALL: 0x0f };
 
 const enc = (types, vals) => encodeAbiParameters(types.map(t => typeof t === "string" ? { type: t } : t), vals);
@@ -256,6 +256,65 @@ export function buildBasket(qb, { slippageBps = 50, permit = null, deadlineSec =
   return { ...finish(cmds, inputs, deadlineSec, 0n), mins };
 }
 
+// Selling a basket: legs [{ sym, amount }] with amount in the stock's own units. Each leg is quoted on its best pool;
+// the PRIVO fee is taken once on the USDG all legs bring in. Returns { side, bips, legs: [{ sym, amount, pool, grossOut }],
+// grossOut, fee, netOut }.
+export async function quoteBasketSell(client, { legs }) {
+  if (!Array.isArray(legs) || legs.length < 2 || legs.length > BASKET_MAX) throw new Error("A basket sale holds 2 to " + BASKET_MAX + " stock tokens");
+  const seen = new Set();
+  for (const l of legs) {
+    const m = MARKETS[l.sym];
+    if (!m || m.kind !== "stock" || m.native) throw new Error("Baskets take stock tokens only (" + l.sym + ")");
+    if (seen.has(l.sym)) throw new Error(l.sym + " is in the basket twice");
+    if (typeof l.amount !== "bigint" || l.amount <= 0n) throw new Error("Nothing to sell for " + l.sym);
+    seen.add(l.sym);
+  }
+  const bips = feeBips();
+  const qs = await Promise.all(legs.map(l => bestPool(client, l.sym, false, l.amount)));
+  const out = legs.map((l, i) => ({ sym: l.sym, amount: l.amount, pool: qs[i].best.pool, grossOut: qs[i].best.out }));
+  const grossOut = out.reduce((a, l) => a + l.grossOut, 0n), fee = portion(grossOut, bips);
+  return { side: "sell", bips, legs: out, grossOut, fee, netOut: grossOut - fee };
+}
+// EIP-712 PermitBatch for Permit2: one signature for several tokens, each for its exact amount, short expiry.
+// items: [{ token, amount, nonce }].
+export function permitBatchTypedData({ items, ttl = 1800 }) {
+  const t = Math.floor(Date.now() / 1000) + ttl;
+  if (!items?.length) throw new Error("Nothing to permit");
+  for (const it of items) if (it.amount > MAX_UINT160) throw new Error("Amount too large");
+  const message = { details: items.map(it => ({ token: it.token, amount: it.amount, expiration: t, nonce: it.nonce })), spender: ADDR.ROUTER, sigDeadline: BigInt(t) };
+  return {
+    domain: { name: "Permit2", chainId: CHAIN.id, verifyingContract: ADDR.PERMIT2 },
+    types: {
+      PermitBatch: [{ name: "details", type: "PermitDetails[]" }, { name: "spender", type: "address" }, { name: "sigDeadline", type: "uint256" }],
+      PermitDetails: [{ name: "token", type: "address" }, { name: "amount", type: "uint160" }, { name: "expiration", type: "uint48" }, { name: "nonce", type: "uint48" }],
+    },
+    primaryType: "PermitBatch",
+    message,
+  };
+}
+// qs: result of quoteBasketSell(). One router call: under one PermitBatch signature (if any token needs one), the router
+// pulls each leg's tokens and swaps them to USDG on that leg's pool with its own slippage floor, keeping the USDG; then
+// the PRIVO fee goes to the fee Safe and the rest is swept to the trader. If any leg falls short, the whole call reverts.
+export function buildBasketSell(qs, { slippageBps = 50, permit = null, deadlineSec = 1200 } = {}) {
+  if (slippageBps < 1 || slippageBps > 500) throw new Error("Slippage must be between 0.01% and 5%");
+  if (BigInt(qs.bips ?? 0) < 0n || BigInt(qs.bips ?? 0) > BigInt(CONFIG.MAX_FEE_BIPS)) throw new Error("PRIVO fee is outside the allowed range");
+  if (qs.side !== "sell" || !qs.legs?.length) throw new Error("Not a basket sale");
+  const cmds = [], inputs = [], mins = [];
+  if (permit) { cmds.push(CMD.PERMIT2_PERMIT_BATCH); inputs.push(enc([PERMIT_BATCH_T, "bytes"], [permit.message, permit.signature])); }
+  for (const l of qs.legs) {
+    const m = MARKETS[l.sym], minOut = applySlippage(l.grossOut, slippageBps);
+    mins.push(minOut);
+    cmds.push(CMD.PERMIT2_TRANSFER_FROM); inputs.push(enc(["address", "address", "uint160"], [m.address, ADDRESS_THIS, l.amount]));
+    if (l.pool.v === 3) for (const inp of v3Swaps(l.sym, l.pool, false, ADDRESS_THIS, minOut)) { cmds.push(CMD.V3_SWAP_EXACT_IN); inputs.push(inp); }
+    else { cmds.push(CMD.V4_SWAP); inputs.push(v4Swap(m.address, l.pool, poolKey(m.address, l.pool).currency0 === m.address, minOut, m.address, USDG.address, true)); }
+  }
+  const feeOn = qs.bips > 0n && CONFIG.FEE_WALLET;
+  if (feeOn) { cmds.push(CMD.PAY_PORTION); inputs.push(enc(["address", "address", "uint256"], [USDG.address, CONFIG.FEE_WALLET, qs.bips])); }
+  const minGross = mins.reduce((a, v) => a + v, 0n), minNet = minGross - portion(minGross, feeOn ? qs.bips : 0n);
+  cmds.push(CMD.SWEEP); inputs.push(enc(["address", "address", "uint160"], [USDG.address, MSG_SENDER, minNet]));
+  return { ...finish(cmds, inputs, deadlineSec, minNet), mins };
+}
+
 // Live mid price of a market straight from its pool (no indexer delay): quote a small buy, sell the
 // tokens back, and take the geometric mean of the two prices so the pool fee cancels out.
 // Returns USDG per token, or null when the pool cannot quote.
@@ -317,6 +376,8 @@ export function permitTypedData({ token, amount, nonce, ttl = 1800 }) {
 /* ---------- calldata ---------- */
 const UR = parseAbi(["function execute(bytes commands, bytes[] inputs, uint256 deadline) payable"]);
 const PERMIT_T = { type: "tuple", components: [{ name: "details", type: "tuple", components: [{ name: "token", type: "address" }, { name: "amount", type: "uint160" }, { name: "expiration", type: "uint48" }, { name: "nonce", type: "uint48" }] }, { name: "spender", type: "address" }, { name: "sigDeadline", type: "uint256" }] };
+
+const PERMIT_BATCH_T = { type: "tuple", components: [{ name: "details", type: "tuple[]", components: PERMIT_T.components[0].components }, { name: "spender", type: "address" }, { name: "sigDeadline", type: "uint256" }] };
 
 function v4Swap(stock, pool, zeroForOne, minOut, settleCurrency, takeCurrency, takeToRouter) {
   const swap = enc([{ type: "tuple", components: [{ name: "poolKey", ...KEY_T }, { name: "zeroForOne", type: "bool" }, { name: "amountIn", type: "uint128" }, { name: "amountOutMinimum", type: "uint128" },
