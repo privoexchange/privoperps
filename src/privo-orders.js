@@ -40,7 +40,8 @@ const randNonce = () => BigInt(toHex(crypto.getRandomValues(new Uint8Array(16)))
 // Orders take stock markets only (18 decimals against USDG), like the Block desk.
 export function orderMarket(sym) {
   const m = Object.hasOwn(MARKETS, sym) ? MARKETS[sym] : null;
-  return m && !m.native && (m.decimals ?? STOCK_DECIMALS) === STOCK_DECIMALS && m.address !== USDG.address ? m : null;
+  // stock tokens only: crypto (ETH, BTC and the memecoins) is not taken by limit or TWAP orders
+  return m && m.kind === "stock" && !m.native && (m.decimals ?? STOCK_DECIMALS) === STOCK_DECIMALS && m.address !== USDG.address ? m : null;
 }
 // The stock symbol of an order (or null), from its token addresses.
 export function orderSym(o) {

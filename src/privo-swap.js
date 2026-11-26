@@ -93,6 +93,30 @@ export const MARKETS = {
   GLXY: { address: "0x2D427692E928fa156ec22acfaBaFA0447C5805B7", pools: [{ v: 3, fee: 3000, id: "0xC67C2D200E0b7E5D99F4CFBede8CB09B48892f2c" }] },
   USAR: { address: "0xd917B029C761D264c6A312BBbcDA868658eF86a6", pools: [{ v: 3, fee: 3000, id: "0x04391780F519B7d3ba59c9590459D76e23d225C4" }] },
   LLY:  { address: "0x8005d266423c7ea827372c9c864491e5786600ea", pools: [{ v: 3, fee: 10000, id: "0xF4274130137eeE20bAD928B593d992716516CEB9" }] },
+  // Added 27 Nov 2026: 14 more Robinhood stock tokens (exactly TSLA's stock-token bytecode, named "… • Robinhood Token"), found by
+  // scanning every Uniswap pool on GeckoTerminal; pools checked on chain, each bought and sold through the Universal Router with
+  // the PRIVO fee (checked against mainnet state, basket tests). CRWV and NBIS are still left out: their pools all have hooks.
+  RBLX: { address: "0xF0C4BF4C582cb3836e98394b1d4e7B7281101bE8", pools: [{ v: 3, fee: 10000, id: "0x2ef5945cd5664876b6481FdacFaA2942995a4DA8" }, { v: 3, fee: 3000, id: "0x1BDB8e3A79Cb1a7F228808739311E23098D33d43" }] },
+  NU:   { address: "0x408c14038a04f7bD235329E26d2bf569ee20e250", pools: [{ v: 3, fee: 10000, id: "0xb6d047637151f6De1d02028acdd187Aa9cb7AFE3" }] },
+  F:    { address: "0x25C288E6D899b9BC30160965aD9644c67e73bE0C", pools: [{ v: 3, fee: 3000, id: "0x4dbAC19E895322ac5b93abad9008691632bFFC05" }] },
+  BA:   { address: "0x4D21483a44Bf67a86b77E3dA301411880797D452", pools: [{ v: 3, fee: 3000, id: "0xc6517047b189c72D3bAa9eF37D1d28F27a63638a" }] },
+  DJT:  { address: "0x1D11f0496982706C5e14A514D4E79F2e6BdE4516", pools: [{ v: 3, fee: 10000, id: "0x31a89afd92F9397465649AD03226c52292fc1ae5" }] },
+  SKHY: { address: "0x84CAb63bc87912E71ad199ff14A0bA45de68FeF8", pools: [{ v: 3, fee: 3000, id: "0x5F2a5025feb93a4C44DA4E3B37e4fD3Fb0ab5171" }] },
+  FIG:  { address: "0x41F4267525a8AFf329540eF24fD83d9044758B33", pools: [{ v: 3, fee: 3000, id: "0xca5904C0a9d42F0Ec1Bf760FDf779907877144fD" }] }, // its v4 pool (fee 0.5%) reverts on quotes
+  IBM:  { address: "0x980dcf6766FA79f5Cf0c4AAdb3ab477ff15a9619", pools: [{ v: 3, fee: 3000, id: "0x8cD848ce18b829C5c769AFf27164078bB52e0E97" }, { v: 3, fee: 10000, id: "0xA0A79bC62fC822f3bcDF0EBbc586031781c53a5B" }] },
+  NET:  { address: "0x116F00968269B7bfbaD4109cE591d6E74c0601d4", pools: [{ v: 3, fee: 3000, id: "0xA9Caebb1b2fB2b954F192572b309aEf1cAf6a330" }] },
+  BABA: { address: "0xad25Ac6C84D497db898fa1E8387bf6Af3532a1c4", pools: [{ v: 3, fee: 3000, id: "0xa57ab582b310dd6f9e934EA1EEEa152741545E6A" }, { v: 4, fee: 1000, ts: 10, id: "0x1791fc651cc794a282e5dbcb56d0b2b38eff8754b677c8876e86901521ecc439" }] },
+  LULU: { address: "0x4e62068525Ab11FE768e29dfD00ef909B9803016", pools: [{ v: 3, fee: 3000, id: "0x0F4227D27082B3BCA6818381b9ea6460275e49f4" }] },
+  VTI:  { address: "0x0594134DF3f171a354D9C85eBD65b7A6148F6D09", pools: [{ v: 3, fee: 10000, id: "0xb78DD1A97fa544c65d7D1f12453EcaAF1e05c36d" }] },
+  SNAP: { address: "0xF6589F11Bc40b669e584073F428B05562F568733", pools: [{ v: 3, fee: 3000, id: "0x0EbD4650C9e641E9745b5A508A2D46935DFE753E" }, { v: 4, fee: 5000, ts: 50, id: "0x4abeed921899c8c2dd063abb21ee983aa7c70d23ae482e6cbbeca939d9e44363" }] },
+  PYPL: { address: "0xa45aBDc77918F7B9199b022eEe400C0BC5712BD2", pools: [{ v: 3, fee: 3000, id: "0x4F59397a5F742dcF91C69763de550f406af7EbfF" }] },
+  // Added 27 Nov 2026: memecoins launched on Pons, each with a large Uniswap v4 USDG pool without hooks (fee 0, tick spacing 1,
+  // key read from the PoolManager's Initialize event). Where another token uses the same name, this is the one with the big pool.
+  // Spot only: baskets, limit and TWAP orders take stock tokens only.
+  PONS:    { kind: "crypto", meme: true, address: "0x87258272f32aE9ff4FF99E7dbBD5c536157Dd9b0", pools: [{ v: 4, fee: 0, ts: 1, id: "0xe25b02d66719bc8e820ed5a60aefa2c9f0a9fd750d68f1e61c64e3bbdfee2614" }] },
+  CASHCAT: { kind: "crypto", meme: true, address: "0xdb52C7032F30f2964D934A464961e02ba1333dC1", pools: [{ v: 4, fee: 0, ts: 1, id: "0x1b632d08142b24439f36f2d182934db3774fbdc65ebd433d0a813e8301028404" }] },
+  AI:      { kind: "crypto", meme: true, address: "0xB442FFA4F7eD5725a7eC83a86Fb59DA380D1FaBb", pools: [{ v: 4, fee: 0, ts: 1, id: "0x15ab5bcf5bcace4477c6d6e25041f80322648d51b125055f8b914b188737df58" }] },
+  ORBIO:   { kind: "crypto", meme: true, address: "0x7c63Adbe03775153782F65f4FA9De6D97d5b4F25", pools: [{ v: 4, fee: 0, ts: 1, id: "0xf4b7f5341e551ec9bd22a2d3574d3016bce8e6b66d55a278d00faee16a05560d" }] },
   ETH:  { kind: "crypto", native: true, address: WETH, pools: [
     { v: 3, fee: 100, id: "0x52e65B17fB6E5BA00Ed806f37Afcd2DaA50271Ca" },
     { v: 3, fee: 500, id: "0x69BfaF19C9f377BB306a89aEd9F6B07e2c1a8d9a" },

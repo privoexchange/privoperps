@@ -5,18 +5,29 @@
 // and the journal reads the sale as one sell per stock.
 //   node test/sim/basket-sell-test.mjs
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { encodeFunctionData, parseAbi, pad, toHex, parseUnits, formatUnits } from "viem";
+import { encodeFunctionData, parseAbi, pad, toHex, parseUnits, formatUnits, keccak256, encodeAbiParameters } from "viem";
 import { basketSellEntries, receiptTransfers, multiEntries } from "../../src/privo-journal.js";
 import { CONFIG, ADDR, USDG, MARKETS, makeClient, quoteBasket, buildBasket, quoteBasketSell, buildBasketSell, permitTypedData, permitBatchTypedData, portion, BASKET_MAX } from "../../src/privo-swap.js";
 
-const c = makeClient(["https://robinhood-rpc.publicnode.com"]);
+const c = makeClient([process.env.PRIVO_RPC || "https://robinhood-rpc.publicnode.com"]); // PRIVO_RPC: another RPC with eth_simulateV1
 const acct = privateKeyToAccount(generatePrivateKey());
 const erc = parseAbi(["function balanceOf(address) view returns (uint256)", "function allowance(address,address) view returns (uint256)", "function approve(address,uint256) returns (bool)"]);
 const TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 let bad = 0; const check = (ok, m) => { console.log((ok ? "  ok    " : "  FAIL  ") + m); if (!ok) bad++; };
 
+// Without eth_createAccessList (some RPCs): try plain Solidity mapping slots 0..99 for balanceOf(owner) and allowance(owner, spender).
+async function guessSlot(token, data, want) {
+  const sel = data.slice(0, 10), args = data.slice(10).match(/.{64}/g).map(w => "0x" + w);
+  for (let i = 0n; i < 100n; i++) {
+    let k = keccak256(encodeAbiParameters([{ type: "bytes32" }, { type: "uint256" }], [args[0], i]));
+    if (sel === "0xdd62ed3e") k = keccak256(encodeAbiParameters([{ type: "bytes32" }, { type: "bytes32" }], [args[1], k]));
+    let r; try { r = await c.request({ method: "eth_call", params: [{ to: token, data }, "latest", { [token]: { stateDiff: { [k]: pad(toHex(want)) } } }] }); } catch { continue; }
+    if (r && r !== "0x" && BigInt(r) === want) return { holder: token, slot: k };
+  }
+  throw new Error("slot not found on " + token);
+}
 async function findSlot(token, data, want) {
-  const al = await c.request({ method: "eth_createAccessList", params: [{ to: token, data }, "latest"] });
+  let al; try { al = await c.request({ method: "eth_createAccessList", params: [{ to: token, data }, "latest"] }); } catch { return guessSlot(token, data, want); }
   for (const e of al.accessList) for (const k of e.storageKeys) {
     let r; try { r = await c.request({ method: "eth_call", params: [{ to: token, data }, "latest", { [e.address]: { stateDiff: { [k]: pad(toHex(want)) } } }] }); } catch { continue; }
     if (r && r !== "0x" && BigInt(r) === want) return { holder: e.address, slot: k };
