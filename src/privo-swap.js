@@ -366,6 +366,86 @@ export function buildBasketSell(qs, { slippageBps = 50, permit = null, deadlineS
   return { ...finish(cmds, inputs, deadlineSec, minNet), mins };
 }
 
+// Rebalancing a basket: legs [{ sym, w, amount }] with w the target share in basis points (summing to 10000) and amount
+// what the basket holds now (the stock's own units). Each leg is valued at what its best pool pays for all of it; legs
+// above target by more than minDriftBps of the basket's value sell the excess, legs below target are bought back up with
+// what the sales bring in. The PRIVO fee is taken once, on the USDG the sales bring in. The buys spend the sales' worst-case
+// proceeds (after slippage and fee), so the trader never pays in more USDG than the sales return; any USDG the sales make
+// above that worst case stays in the wallet. Returns { bips, slippageBps, value, sells: [{ sym, amount, pool, grossOut }],
+// buys: [{ sym, swapIn, pool, grossOut }], grossOut, fee, netOut, minNet, buyIn, legs: [{ sym, w, now, after }] }.
+export async function quoteRebalance(client, { legs, slippageBps = 50, minDriftBps = 50 }) {
+  if (!Array.isArray(legs) || legs.length < 2 || legs.length > BASKET_MAX) throw new Error("A basket holds 2 to " + BASKET_MAX + " stock tokens");
+  if (slippageBps < 1 || slippageBps > 500) throw new Error("Slippage must be between 0.01% and 5%");
+  const seen = new Set();
+  for (const l of legs) {
+    const m = MARKETS[l.sym];
+    if (!m || m.kind !== "stock" || m.native) throw new Error("Baskets take stock tokens only (" + l.sym + ")");
+    if (seen.has(l.sym)) throw new Error(l.sym + " is in the basket twice");
+    if (!Number.isInteger(l.w) || l.w <= 0) throw new Error("Each stock needs a target share above 0");
+    if (typeof l.amount !== "bigint" || l.amount < 0n) throw new Error("Holding of " + l.sym + " must be a token amount");
+    seen.add(l.sym);
+  }
+  if (legs.reduce((a, l) => a + l.w, 0) !== 10000) throw new Error("The target shares must add up to 100%");
+  const vals = await Promise.all(legs.map(l => (l.amount > 0n ? bestPool(client, l.sym, false, l.amount).then(r => r.best.out) : 0n)));
+  const value = vals.reduce((a, v) => a + v, 0n);
+  if (value <= 0n) throw new Error("This basket holds nothing to rebalance");
+  const tol = value * BigInt(minDriftBps) / 10000n;
+  const plan = legs.map((l, i) => ({ ...l, v: vals[i], drift: vals[i] - value * BigInt(l.w) / 10000n }));
+  const over = plan.filter(p => p.drift > tol && p.v > 0n), under = plan.filter(p => -p.drift > tol);
+  if (!over.length || !under.length) throw new Error("This basket is already within " + (minDriftBps / 100) + "% of its targets");
+  const bips = feeBips();
+  // sells: the excess share of each overweight holding, quoted on its best pool
+  const sq = await Promise.all(over.map(p => { const amount = p.amount * p.drift / p.v; return bestPool(client, p.sym, false, amount).then(r => ({ sym: p.sym, amount, pool: r.best.pool, grossOut: r.best.out })); }));
+  const grossOut = sq.reduce((a, s) => a + s.grossOut, 0n), fee = portion(grossOut, bips);
+  const minGross = sq.reduce((a, s) => a + applySlippage(s.grossOut, slippageBps), 0n), minNet = minGross - portion(minGross, bips);
+  // buys: the worst-case proceeds, shared by how far each underweight leg is below its target
+  const need = under.reduce((a, p) => a - p.drift, 0n);
+  let left = minNet;
+  const parts = under.map((p, i) => { const part = i === under.length - 1 ? left : minNet * -p.drift / need; left -= part; return { sym: p.sym, swapIn: part }; });
+  if (parts.some(b => b.swapIn <= 0n)) throw new Error("The basket is too small to rebalance");
+  const bq = await Promise.all(parts.map(b => bestPool(client, b.sym, true, b.swapIn).then(r => ({ ...b, pool: r.best.pool, grossOut: r.best.out }))));
+  // shares now and after (at the same pool values; the bought legs at what they cost)
+  const after = plan.map(p => {
+    const s = sq.find(x => x.sym === p.sym), b = bq.find(x => x.sym === p.sym);
+    return p.v - (s ? p.drift : 0n) + (b ? b.swapIn : 0n);
+  });
+  const afterTotal = after.reduce((a, v) => a + v, 0n);
+  return { bips, slippageBps, value, sells: sq, buys: bq, grossOut, fee, netOut: grossOut - fee, minNet, buyIn: minNet,
+    legs: plan.map((p, i) => ({ sym: p.sym, w: p.w, now: Number(p.v * 10000n / value), after: Number(after[i] * 10000n / afterTotal) })) };
+}
+// qr: result of quoteRebalance(). One router call: under one PermitBatch signature (if any token needs one: the sold stocks
+// and the USDG for the buys), the router sells each overweight leg on its pool with its own floor, pays the PRIVO fee once
+// and sweeps the USDG to the trader (at least the worst-case proceeds), then pulls exactly each buy's USDG back and buys
+// the underweight legs, each with its own floor, straight to the trader. If any leg falls short, the whole call reverts.
+export function buildRebalance(qr, { permit = null, deadlineSec = 1200 } = {}) {
+  const slippageBps = qr.slippageBps;
+  if (!(slippageBps >= 1 && slippageBps <= 500)) throw new Error("Slippage must be between 0.01% and 5%");
+  if (BigInt(qr.bips ?? 0) < 0n || BigInt(qr.bips ?? 0) > BigInt(CONFIG.MAX_FEE_BIPS)) throw new Error("PRIVO fee is outside the allowed range");
+  if (!qr.sells?.length || !qr.buys?.length) throw new Error("Not a rebalance");
+  if (qr.buys.reduce((a, b) => a + b.swapIn, 0n) !== qr.minNet) throw new Error("Rebalance buys do not add up");
+  const cmds = [], inputs = [], mins = [];
+  if (permit) { cmds.push(CMD.PERMIT2_PERMIT_BATCH); inputs.push(enc([PERMIT_BATCH_T, "bytes"], [permit.message, permit.signature])); }
+  for (const l of qr.sells) {
+    const m = MARKETS[l.sym], minOut = applySlippage(l.grossOut, slippageBps);
+    cmds.push(CMD.PERMIT2_TRANSFER_FROM); inputs.push(enc(["address", "address", "uint160"], [m.address, ADDRESS_THIS, l.amount]));
+    if (l.pool.v === 3) for (const inp of v3Swaps(l.sym, l.pool, false, ADDRESS_THIS, minOut)) { cmds.push(CMD.V3_SWAP_EXACT_IN); inputs.push(inp); }
+    else { cmds.push(CMD.V4_SWAP); inputs.push(v4Swap(m.address, l.pool, poolKey(m.address, l.pool).currency0 === m.address, minOut, m.address, USDG.address, true)); }
+  }
+  const feeOn = qr.bips > 0n && CONFIG.FEE_WALLET;
+  if (feeOn) { cmds.push(CMD.PAY_PORTION); inputs.push(enc(["address", "address", "uint256"], [USDG.address, CONFIG.FEE_WALLET, qr.bips])); }
+  cmds.push(CMD.SWEEP); inputs.push(enc(["address", "address", "uint160"], [USDG.address, MSG_SENDER, qr.minNet]));
+  for (const l of qr.buys) {
+    const m = MARKETS[l.sym], minOut = applySlippage(l.grossOut, slippageBps);
+    mins.push(minOut);
+    cmds.push(CMD.PERMIT2_TRANSFER_FROM); inputs.push(enc(["address", "address", "uint160"], [USDG.address, ADDRESS_THIS, l.swapIn]));
+    if (l.pool.v === 3) for (const inp of v3Swaps(l.sym, l.pool, true, MSG_SENDER, minOut)) { cmds.push(CMD.V3_SWAP_EXACT_IN); inputs.push(inp); }
+    else { cmds.push(CMD.V4_SWAP); inputs.push(v4Swap(m.address, l.pool, poolKey(m.address, l.pool).currency0 === USDG.address, minOut, USDG.address, m.address, false)); }
+  }
+  return { ...finish(cmds, inputs, deadlineSec, 0n), mins };
+}
+// What a rebalance needs Permit2 to let the router pull: each sold stock's amount and the USDG for the buys.
+export const rebalancePulls = qr => [...qr.sells.map(l => ({ token: MARKETS[l.sym].address, amount: l.amount })), { token: USDG.address, amount: qr.minNet }];
+
 // Live mid price of a market straight from its pool (no indexer delay): quote a small buy, sell the
 // tokens back, and take the geometric mean of the two prices so the pool fee cancels out.
 // Returns USDG per token, or null when the pool cannot quote.

@@ -10,6 +10,7 @@
 //   await privo.orders.limit({ sym: "TSLA", side: "buy", amount: "100", price: 370 });  // never pays more than 370 per token
 //   await privo.baskets.buy({ legs: ["AAPL", "MSFT", "NVDA"], amount: "90" });         // 30 USDG each, one transaction
 //   await privo.baskets.sell({ legs: ["AAPL", "MSFT", "NVDA"], pct: 50 });              // half of each, to USDG
+//   await privo.baskets.rebalance({ legs: ["AAPL", "MSFT", "NVDA"] });                  // back to a third each, one transaction
 import { encodeFunctionData, getAddress, isAddress, parseAbi, parseUnits, formatUnits } from "viem";
 import * as Swap from "./privo-swap.js";
 import * as Perps from "./privo-perps.js";
@@ -56,6 +57,7 @@ export class Privo {
       approval: (token = Swap.USDG.address) => Orders.approval(this.client, this._need(), token),
       revoke: (token = Swap.USDG.address, keep = 0n) => this._send(Orders.approveTx(token, BigInt(keep))) };
     this.baskets = { quote: o => this._basketQuote(o), buy: o => this._basketBuy(o), quoteSell: o => this._basketSellQuote(o), sell: o => this._basketSell(o),
+      quoteRebalance: o => this._rebalanceQuote(o), rebalance: o => this._rebalance(o),
       link: (legs, name) => Swap.basketLink(this._legs(legs), { name }), parse: link => Swap.parseBasketLink(link) };
     this.block = { request: o => this._blockRequest(o), answer: (link, price, o) => this._blockAnswer(link, price, o), check: (req, codes) => this._blockCheck(req, codes), settle: (req, quote) => this._blockSettle(req, quote) };
   }
@@ -168,6 +170,43 @@ export class Privo {
     }
     const hash = await this._send(Swap.buildBasketSell(q, { slippageBps: this.slippageBps, permit }));
     return { hash, quotedUsdg: q.outUsdg, feeUsdg: q.feeUsdg, legs: q.out };
+  }
+  // Rebalance: legs are the target shares (symbols for equal shares, [{ sym, pct }], or a basket share link). What each leg
+  // holds is the wallet's whole balance of that stock, or { sym, pct, qty } for an exact amount.
+  async _rebalanceLegs({ legs }) {
+    const me = this._need(), w = this._legs(legs);
+    return Promise.all(w.map(async (l, i) => {
+      const src = Array.isArray(legs) ? legs[i] : null;
+      if (src && typeof src === "object" && src.qty != null) return { sym: l.sym, w: l.w, amount: parseUnits(String(src.qty), Swap.decimalsOf(l.sym)) };
+      const amount = await this.client.readContract({ address: Swap.MARKETS[l.sym]?.address, abi: ERC20, functionName: "balanceOf", args: [me] });
+      return { sym: l.sym, w: l.w, amount };
+    }));
+  }
+  async _rebalanceQuote(o) {
+    const q = await Swap.quoteRebalance(this.client, { legs: await this._rebalanceLegs(o), slippageBps: this.slippageBps, minDriftBps: o.minDriftBps ?? 50 });
+    const d = s => Swap.decimalsOf(s);
+    return { ...q, feeUsdg: formatUnits(q.fee, 6), proceedsUsdg: formatUnits(q.netOut, 6), buysUsdg: formatUnits(q.minNet, 6),
+      sold: q.sells.map(l => ({ sym: l.sym, tokens: formatUnits(l.amount, d(l.sym)), usdg: formatUnits(l.grossOut, 6), route: Swap.routeLabel(l.pool) })),
+      bought: q.buys.map(l => ({ sym: l.sym, usdg: formatUnits(l.swapIn, 6), tokens: formatUnits(l.grossOut, d(l.sym)), route: Swap.routeLabel(l.pool) })),
+      shares: q.legs.map(l => ({ sym: l.sym, now: l.now / 100, after: l.after / 100, target: l.w / 100 })) };
+  }
+  // One transaction: sells what is above target, pays the fee once on the proceeds, buys what is below target with the
+  // worst-case proceeds, or changes nothing. Approves each sold stock (and USDG) to Permit2 once, then one PermitBatch.
+  async _rebalance(o) {
+    const me = this._need(), q = await this._rebalanceQuote(o);
+    const items = [];
+    for (const p of Swap.rebalancePulls(q)) {
+      const st = await Swap.approvalState(this.client, me, p.token, p.amount);
+      if (st.needErc20Approve) await this._send(Swap.approveTx(p.token));
+      if (st.needPermit) items.push({ ...p, nonce: st.nonce });
+    }
+    let permit = null;
+    if (items.length) {
+      const td = Swap.permitBatchTypedData({ items });
+      permit = { message: td.message, signature: await this.wallet.signTypedData({ account: this.wallet.account, ...td }) };
+    }
+    const hash = await this._send(Swap.buildRebalance(q, { permit }));
+    return { hash, feeUsdg: q.feeUsdg, sold: q.sold, bought: q.bought, shares: q.shares };
   }
 
   /* ---------- perps (Orderly, PRIVO builder account) ---------- */

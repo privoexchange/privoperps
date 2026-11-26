@@ -96,8 +96,41 @@ export function basketSellEntries(transfers, addr, { hash, ts = Date.now() }) {
     return entry({ hash, ts, sym: l.sym, usdgOut: 0n, usdgIn: u, tokOut: l.tokOut, tokIn: 0n });
   });
 }
-// A basket buy or a basket sale, as one trade per market; null for anything else.
-export const multiEntries = (transfers, addr, opts) => basketEntries(transfers, addr, opts) || basketSellEntries(transfers, addr, opts);
+// Basket rebalances: one transaction that sells some markets and buys others. In log order: each sold market's token
+// leaves the wallet followed by the USDG its pool pays into the router; the router pays the PRIVO fee and sweeps the USDG
+// to the wallet; then for each bought market the wallet's USDG goes into the router followed by that market's token
+// arriving. The swept USDG is shared over the sold legs by what each pool paid; each buy costs the USDG pulled for it.
+// Returns one sell per sold market and one buy per bought market, or null when the transaction is not a rebalance.
+export function rebalanceEntries(transfers, addr, { hash, ts = Date.now() }) {
+  const me = addr.toLowerCase(), usdg = USDG.address.toLowerCase(), router = ADDR.ROUTER.toLowerCase(), fw = (CONFIG.FEE_WALLET || "").toLowerCase();
+  const sells = [], buys = [];
+  let net = 0n, pending = 0n;
+  for (const t of transfers) {
+    const sym = t.tok === usdg ? "USDG" : bySymbol[t.tok];
+    if (!sym || (sym !== "USDG" && isNative(sym))) continue;
+    if (sym === "USDG") {
+      if (t.to === me) { if (buys.length || pending) return null; net += t.v; }
+      else if (t.from === me) { if (fw && t.to === fw) return null; pending += t.v; }
+      else if (t.to === router && sells.length && !pending && !buys.length) sells.at(-1).gross += t.v;
+    } else if (t.from === me) { if (pending || buys.length) return null; sells.push({ sym, tokOut: t.v, gross: 0n }); }
+    else if (t.to === me && pending > 0n) { buys.push({ sym, tokIn: t.v, usdg: pending }); pending = 0n; }
+  }
+  if (!sells.length || !buys.length || net <= 0n || pending) return null;
+  const syms = [...sells, ...buys].map(l => l.sym);
+  if (new Set(syms).size !== syms.length) return null;
+  if (sells.length > 1 && sells.some(l => l.gross <= 0n)) return null;
+  const total = sells.reduce((a, l) => a + l.gross, 0n);
+  let left = net;
+  const out = sells.map((l, i) => {
+    const u = i === sells.length - 1 ? left : net * l.gross / total;
+    left -= u;
+    return entry({ hash, ts, sym: l.sym, usdgOut: 0n, usdgIn: u, tokOut: l.tokOut, tokIn: 0n });
+  });
+  for (const l of buys) out.push(entry({ hash, ts, sym: l.sym, usdgOut: l.usdg, usdgIn: 0n, tokOut: 0n, tokIn: l.tokIn }));
+  return out.every(Boolean) ? out : null;
+}
+// A basket buy, sale or rebalance, as one trade per market; null for anything else.
+export const multiEntries = (transfers, addr, opts) => rebalanceEntries(transfers, addr, opts) || basketEntries(transfers, addr, opts) || basketSellEntries(transfers, addr, opts);
 // ERC-20 transfers of a receipt, in log order, for basketEntries and basketSellEntries.
 export function receiptTransfers(rc) {
   const out = [];
@@ -137,15 +170,15 @@ export async function backfill(addr, { pages = 6, fetchFn = fetch } = {}) {
     const u = t.legs.USDG; if (!u) continue;
     const basket = multiEntries(t.list.sort((a, b) => a.i - b.i), addr, { hash: t.hash, ts: t.ts });
     if (basket) { out.push(...basket); continue; }
-    const sold = Object.entries(t.legs).filter(([s, l]) => s !== "USDG" && l.out > l.in);
-    if (sold.length >= 2 && u.in > 0n) {
-      // A basket sale: the wallet's own feed has no pool payments, so read the whole transaction's transfers to split
-      // the USDG by leg. If that fails, leave the transaction out rather than book it wrongly.
+    const sold = Object.entries(t.legs).filter(([s, l]) => s !== "USDG" && l.out > l.in), got = Object.entries(t.legs).filter(([s, l]) => s !== "USDG" && l.in > l.out);
+    if ((sold.length >= 2 || (sold.length && got.length)) && u.in > 0n) {
+      // A basket sale or rebalance: the wallet's own feed has no pool payments, so read the whole transaction's transfers
+      // to split the USDG by leg. If that fails, leave the transaction out rather than book it wrongly.
       try {
         const r = await fetchFn(`${EXPLORER_API}/transactions/${t.hash}/token-transfers?type=ERC-20`);
         const items = r.ok ? (await r.json()).items || [] : [];
         const list = items.map(it => ({ i: Number(it.log_index ?? 0), tok: (it.token?.address_hash || it.token?.address || "").toLowerCase(), from: (it.from?.hash || "").toLowerCase(), to: (it.to?.hash || "").toLowerCase(), v: BigInt(it.total?.value || 0) }));
-        const es = basketSellEntries(list.sort((a, b) => a.i - b.i), addr, { hash: t.hash, ts: t.ts });
+        const es = multiEntries(list.sort((a, b) => a.i - b.i), addr, { hash: t.hash, ts: t.ts });
         if (es) out.push(...es);
       } catch { /* Blockscout busy */ }
       continue;
@@ -160,9 +193,11 @@ export async function backfill(addr, { pages = 6, fetchFn = fetch } = {}) {
 }
 
 // Baskets held: every basket buy in the journal (one transaction buying several markets), less the basket sales linked
-// to it. links: { saleHash: buyHash }, kept by the app that sent the sale. Each leg keeps what is left of the bought
-// quantity, its cost (pro rata) and what linked sales realized. Fees are inside the USDG amounts.
-// Returns [{ id, ts, sales, legs: [{ sym, bought, cost, qty, basis, proceeds, realized }] }], oldest first.
+// to it and with the rebalances linked to it. links: { saleOrRebalanceHash: buyHash }, kept by the app that sent it. Each
+// leg keeps what is left of its quantity, its basis (pro rata on sales, plus what rebalance buys cost) and what sales
+// realized; cost stays what the first buy put into that leg, so cost shares are the basket's target shares. Fees are
+// inside the USDG amounts. Returns [{ id, ts, sales, rebalances, legs: [{ sym, bought, cost, qty, basis, proceeds,
+// realized }] }], oldest first.
 export function basketPositions(trades, links = {}) {
   const byHash = new Map(), out = new Map();
   for (const t of [...trades].sort((a, b) => a.ts - b.ts)) {
@@ -174,17 +209,18 @@ export function basketPositions(trades, links = {}) {
   for (const [h, ts] of byHash) {
     if (ts.length < 2) continue;
     if (ts.every(t => t.side === "buy")) {
-      out.set(h, { id: h, ts: ts[0].ts, sales: 0, legs: ts.map(t => ({ sym: t.sym, bought: t.qty, cost: t.usdg, qty: t.qty, basis: t.usdg, proceeds: 0, realized: 0 })) });
-    } else if (ts.every(t => t.side === "sell") && out.has(lk[h])) {
+      out.set(h, { id: h, ts: ts[0].ts, sales: 0, rebalances: 0, legs: ts.map(t => ({ sym: t.sym, bought: t.qty, cost: t.usdg, qty: t.qty, basis: t.usdg, proceeds: 0, realized: 0 })) });
+    } else if (out.has(lk[h])) {
       const b = out.get(lk[h]);
       for (const t of ts) {
         const l = b.legs.find(x => x.sym === t.sym);
+        if (l && t.side === "buy") { l.qty += t.qty; l.basis += t.usdg; continue; }
         if (!l || !(l.qty > 0)) continue;
         const q = Math.min(t.qty, l.qty), c = l.basis * q / l.qty, p = t.usdg * q / t.qty;
         l.qty -= q; l.basis -= c; l.proceeds += p; l.realized += p - c;
         if (l.qty <= l.bought * 1e-9) { l.qty = 0; l.basis = 0; }
       }
-      b.sales++;
+      if (ts.every(t => t.side === "sell")) b.sales++; else b.rebalances++;
     }
   }
   return [...out.values()];

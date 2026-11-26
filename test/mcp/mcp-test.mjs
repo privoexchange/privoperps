@@ -29,8 +29,8 @@ async function stdio(env) {
   return c;
 }
 const READ = ["privo_arena", "privo_markets", "privo_prices", "privo_quote", "privo_quote_basket", "privo_wallet"];
-const TRADE = ["privo_basket_buy", "privo_basket_sell", "privo_buy", "privo_cancel_order", "privo_limit_order", "privo_orders", "privo_perps_account", "privo_perps_cancel",
-  "privo_perps_connect", "privo_perps_deposit", "privo_perps_order", "privo_sell", "privo_twap_order"];
+const TRADE = ["privo_basket_buy", "privo_basket_rebalance", "privo_basket_sell", "privo_buy", "privo_cancel_order", "privo_limit_order", "privo_orders", "privo_perps_account", "privo_perps_cancel",
+  "privo_perps_connect", "privo_perps_deposit", "privo_perps_order", "privo_quote_rebalance", "privo_sell", "privo_twap_order"];
 
 /* ---------- 1. read-only over stdio ---------- */
 {
@@ -80,6 +80,12 @@ const key = generatePrivateKey(), addr = privateKeyToAccount(key).address;
   check(ethAll.isError && /gas/.test(text(ethAll)), "selling all ETH is refused (gas)");
   const noFunds = await c.callTool({ name: "privo_buy", arguments: { symbol: "TSLA", usdg: "5" } });
   check(noFunds.isError, "a buy from an empty wallet fails before sending (" + text(noFunds).slice(0, 70) + ")");
+  const legs = [{ sym: "AAPL", pct: 50, qty: "1" }, { sym: "NVDA", pct: 50, qty: "0.1" }];
+  const rq = body(await c.callTool({ name: "privo_quote_rebalance", arguments: { legs } }));
+  check(rq?.sold?.[0]?.sym === "AAPL" && rq?.bought?.[0]?.sym === "NVDA" && rq.shares.every(x => Math.abs(x.after - 50) < 2),
+    "privo_quote_rebalance: 1 AAPL + 0.1 NVDA to 50/50 sells " + rq?.sold?.[0]?.tokens + " AAPL, buys NVDA with " + rq?.spentOnBuysUsdg + " USDG; after " + rq?.shares?.map(x => x.after.toFixed(1)).join(" / "));
+  const rb = await c.callTool({ name: "privo_basket_rebalance", arguments: { legs } });
+  check(rb.isError && /limit of 50/.test(text(rb)), "a rebalance selling more than 50 USDG is refused by the limit");
   const cancel = await c.callTool({ name: "privo_cancel_order", arguments: { orderId: "123" } });
   check(cancel.isError && /No order 123/.test(text(cancel)), "cancelling an unknown order is refused");
   check(!/0x[0-9a-f]{64}/i.test(JSON.stringify(w)) , "the key never appears in a reply");

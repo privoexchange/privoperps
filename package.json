@@ -1,6 +1,6 @@
 {
   "name": "privoperps",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "PRIVO SDK and core on Robinhood Chain: spot swaps through Uniswap with the PRIVO fee, limit orders and TWAP, Orderly perps, sealed OTC block trades, and the Block desk and Orders contracts. An MCP server (privo-mcp) for AI agents. Every trade is signed by your own wallet.",
   "type": "module",
   "license": "MIT",

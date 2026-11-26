@@ -4,7 +4,7 @@ Open-source core of [PRIVO](https://privoexchange.com), a trading layer for stoc
 
 - **Spot** trades route to Uniswap pools, with a small PRIVO fee taken on chain.
 - **Perps** run on [Orderly Network](https://orderly.network) through PRIVO's builder account (`privo`), margined in USDG.
-- **Baskets** on spot: one USDG amount spread over 2 to 8 stock tokens in a single Universal Router call under one Permit2 signature, each bought on its best pool with its own slippage floor; all or nothing, with the PRIVO fee taken once. A basket sells the same way: 2 to 8 stock tokens to USDG in one call under one Permit2 PermitBatch signature, each leg with its own floor, all or nothing (`quoteBasketSell`, `buildBasketSell`).
+- **Baskets** on spot: one USDG amount spread over 2 to 8 stock tokens in a single Universal Router call under one Permit2 signature, each bought on its best pool with its own slippage floor; all or nothing, with the PRIVO fee taken once. A basket sells the same way: 2 to 8 stock tokens to USDG in one call under one Permit2 PermitBatch signature, each leg with its own floor, all or nothing (`quoteBasketSell`, `buildBasketSell`). A basket rebalances the same way: what is above its target share sells, the fee is taken once on the proceeds, and what is below target is bought with the worst-case proceeds, in one call under one PermitBatch signature (`quoteRebalance`, `buildRebalance`).
 - **Limit orders and TWAP** on spot: the trader signs an order off chain, and PRIVO's keeper fills it through the PrivoOrders contract, never below the trader's limit, in one go or in slices over time.
 - **The Block desk** is a sealed-quote OTC contract: takers sign quotes off chain, the maker settles the best one in a single transaction, and losing quotes stay off chain unless the maker fills them (the app and SDK settle at most once per request and ask losing takers to withdraw).
 
@@ -24,7 +24,7 @@ This repository holds the smart contract, the wallet-free client libraries the a
 | [`src/privo-orders.js`](src/privo-orders.js) | Limit orders and TWAP: EIP-712 orders, slice math (same as the contract), limit price to minimum output, order state, and the fill call a keeper sends (best pool quote, route never below the order's limit). |
 | [`src/privo-journal.js`](src/privo-journal.js) | Spot trade journal: trades from receipts or the Blockscout API, average-cost book and realized PnL per sale. |
 | [`src/privo-feed.js`](src/privo-feed.js) | Read-only market data: pool prices and candles (GeckoTerminal), Orderly perp stats, candles and max leverage per market. |
-| [`src/privo-sdk.js`](src/privo-sdk.js) | SDK for bots and AI agents: the `Privo` class over the modules above (spot buy/sell, baskets buy/sell/share links, limit and TWAP orders, perps connect/deposit/order, block request/answer/check/settle, read API). |
+| [`src/privo-sdk.js`](src/privo-sdk.js) | SDK for bots and AI agents: the `Privo` class over the modules above (spot buy/sell, baskets buy/sell/rebalance/share links, limit and TWAP orders, perps connect/deposit/order, block request/answer/check/settle, read API). |
 | [`mcp/privo-mcp.mjs`](mcp/privo-mcp.mjs) | MCP server (`privo-mcp`) so any MCP-capable AI agent can read PRIVO markets and trade with its own wallet, with a per-trade USDG limit. |
 | [`examples/`](examples) | Example bots, starting with a dip buyer. |
 | [`test/`](test) | Tests that run against mainnet state with `eth_call` and state overrides. They send no transactions. |
@@ -61,6 +61,7 @@ Other clients (Claude Desktop, Cursor and so on) take the same command in their 
 | `privo_quote`, `privo_quote_basket` | Spot and basket quotes: estimated and minimum output, PRIVO fee, route |
 | `privo_buy`, `privo_sell` | Spot through Uniswap with the 0.15% PRIVO fee (`sell` takes `"all"`) |
 | `privo_basket_buy`, `privo_basket_sell` | 2 to 8 stock tokens in one transaction, all or nothing |
+| `privo_quote_rebalance`, `privo_basket_rebalance` | Back to target shares in one transaction: sell what is above target, buy what is below |
 | `privo_limit_order`, `privo_twap_order`, `privo_orders`, `privo_cancel_order` | Limit and TWAP through PrivoOrders, filled by PRIVO's keeper, never worse than the price |
 | `privo_perps_connect`, `privo_perps_deposit`, `privo_perps_order`, `privo_perps_account`, `privo_perps_cancel` | Orderly perps; the 30-day trading key is saved on the agent's machine and cannot withdraw |
 
@@ -96,6 +97,7 @@ await privo.spot.quote("TSLA", "buy", "100");        // 100 USDG in, with the 0.
 await privo.spot.buy("TSLA", "100");
 await privo.baskets.buy({ legs: ["AAPL", "MSFT", "NVDA"], amount: "90" });  // one transaction, fee once
 await privo.baskets.sell({ legs: ["AAPL", "MSFT", "NVDA"], pct: 50 });       // half of each, to USDG
+await privo.baskets.rebalance({ legs: ["AAPL", "MSFT", "NVDA"] });           // back to a third each, one transaction
 const { key } = await privo.perps.connect();          // once; store key.secret privately, pass it back as perpsKey
 await privo.perps.order({ sym: "ETH", side: "BUY", qty: 0.01 });
 ```
@@ -142,6 +144,7 @@ node test/blockdesk/ui-core-test.mjs   # client library against the deployed con
 node test/blockdesk/deploy-test.mjs    # deployed bytecode matches this build
 node test/orders/orders-test.mjs       # PrivoOrders on mainnet state: limit buy/sell, v3 and v4 pools, TWAP slices and timing, every refusal
 node test/orders/deploy-test.mjs       # PrivoOrders bytecode on chain matches this build
+node test/sim/rebalance-test.mjs       # basket rebalances on mainnet state: lopsided baskets back to target, fee once, router keeps nothing, journal and positions
 node test/mcp/mcp-test.mjs             # MCP server over stdio: read tools, limits and refusals, and privo_buy / privo_basket_buy transactions simulated on mainnet state
 node test/sim/livetest.mjs             # spot swaps with the PRIVO fee for every market
 node test/sim/perpstest.mjs            # Orderly account IDs, vault deposits, key and request signing

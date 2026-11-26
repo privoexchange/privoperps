@@ -179,6 +179,26 @@ export function buildServer(privo = makePrivo(), { readOnly = E.PRIVO_READ_ONLY 
       return { ...tx(r.hash), quotedUsdg: r.quotedUsdg, privoFeeUsdg: r.feeUsdg, legs: r.legs };
     }));
 
+    const rebalIn = { legs: z.union([z.array(z.string()).min(2).max(8), z.array(z.object({ sym: z.string(), pct: z.number().positive(), qty: dec.optional().describe("Tokens of this stock in the basket (default: the wallet's whole balance)") })).min(2).max(8), z.string().url()])
+        .describe("The target shares: 2 to 8 stock symbols for equal shares, [{ sym, pct, qty? }] with pct adding up to 100, or a basket share link"),
+      min_drift_pct: z.number().min(0.01).max(20).default(0.5).describe("Only stocks off target by more than this share of the basket are traded") };
+    const rebalQuote = async ({ legs, min_drift_pct }) => {
+      const q = await privo.baskets.quoteRebalance({ legs, minDriftBps: Math.round(min_drift_pct * 100) });
+      return { q, view: { sold: q.sold, bought: q.bought, shares: q.shares, proceedsUsdg: q.proceedsUsdg, spentOnBuysUsdg: q.buysUsdg, privoFeeUsdg: q.feeUsdg, slippageBps: SLIP } };
+    };
+    server.registerTool("privo_quote_rebalance", { title: "Quote a basket rebalance", annotations: RO,
+      description: "Quote bringing stock tokens this wallet holds back to target shares, without trading: what would be sold, what bought, and each share now and after.",
+      inputSchema: rebalIn }, wrap(async a => (await rebalQuote(a)).view));
+    server.registerTool("privo_basket_rebalance", { title: "Rebalance a basket", annotations: RW,
+      description: "Bring stock tokens this wallet holds back to target shares in one transaction (real, on chain): sells what is above target, takes the 0.15% PRIVO fee once on the proceeds, and buys what is below target with them. If any stock cannot fill, nothing changes.",
+      inputSchema: rebalIn },
+    wrap(async a => {
+      const { q } = await rebalQuote(a);
+      capCheck(q.proceedsUsdg, LIMITS.maxUsdg, "This rebalance");
+      const r = await privo.baskets.rebalance({ legs: a.legs, minDriftBps: Math.round(a.min_drift_pct * 100) });
+      return { ...tx(r.hash), sold: r.sold, bought: r.bought, shares: r.shares, privoFeeUsdg: r.feeUsdg };
+    }));
+
     const orderIn = { symbol: sym.describe("A stock token symbol (limit and TWAP take stock tokens only)"), side: z.enum(["buy", "sell"]),
       amount: dec.describe("USDG to spend (buy) or stock tokens to sell (sell)"), price: z.number().positive().describe("Worst USDG per stock token you accept: a buy never pays more, a sell never gets less"),
       days: z.number().positive().max(30).default(7).describe("How long the order stays open, up to 30 days") };
