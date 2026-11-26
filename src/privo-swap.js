@@ -228,6 +228,33 @@ export function splitBasket(legs, amount) {
   if (out.some(l => l.swapIn <= 0n)) throw new Error("The amount is too small to split");
   return { amount, bips, fee, swapIn, legs: out };
 }
+// Share links for a basket: app.html?basket=AAPL:20,MSFT:20,...&name=Big%20Tech#trade, shares in percent with up to two
+// decimals. A link only fills the ticket: nothing is bought until the visitor reviews it and signs.
+const cleanName = s => String(s || "").replace(/[^\p{L}\p{N} .&'-]/gu, "").replace(/\s+/g, " ").trim().slice(0, 32);
+export function basketLink(legs, { name = "", base = "https://privoexchange.com/app.html" } = {}) {
+  splitBasket(legs, 1_000000n); // same rules as a buy: 2 to 8 different stock tokens, shares adding up to 100%
+  const n = cleanName(name);
+  return base + "?basket=" + legs.map(l => l.sym + ":" + +(l.w / 100).toFixed(2)).join(",") + (n ? "&name=" + encodeURIComponent(n) : "") + "#trade";
+}
+// From a link, or its ?basket= value, to { legs: [{ sym, w }], name }. Throws when the basket breaks a rule.
+export function parseBasketLink(input) {
+  let raw = String(input || "").trim(), name = "";
+  if (/[?&]basket=/.test(raw)) {
+    const q = new URLSearchParams(raw.slice(raw.indexOf("?") + 1).split("#")[0]);
+    raw = q.get("basket") || ""; name = q.get("name") || "";
+  }
+  const parts = raw.split(",").filter(Boolean);
+  if (parts.length > BASKET_MAX) throw new Error("A basket holds 2 to " + BASKET_MAX + " stock tokens");
+  const legs = parts.map(p => {
+    const m = /^([A-Za-z0-9]{1,12}):(\d{1,3}(?:\.\d{1,2})?)$/.exec(p.trim());
+    if (!m) throw new Error("This basket link is not valid");
+    const sym = m[1].toUpperCase();
+    if (!Object.hasOwn(MARKETS, sym)) throw new Error("No live market for " + sym);
+    return { sym, w: Math.round(parseFloat(m[2]) * 100) };
+  });
+  splitBasket(legs, 1_000000n);
+  return { legs, name: cleanName(name) };
+}
 export async function quoteBasket(client, { legs, amount }) {
   const b = splitBasket(legs, amount);
   const qs = await Promise.all(b.legs.map(l => bestPool(client, l.sym, true, l.swapIn)));

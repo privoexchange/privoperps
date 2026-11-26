@@ -8,6 +8,8 @@
 //   const { key } = await privo.perps.connect();        // once; store key.secret somewhere safe
 //   await privo.perps.order({ sym: "ETH", side: "BUY", qty: 0.01 });
 //   await privo.orders.limit({ sym: "TSLA", side: "buy", amount: "100", price: 370 });  // never pays more than 370 per token
+//   await privo.baskets.buy({ legs: ["AAPL", "MSFT", "NVDA"], amount: "90" });         // 30 USDG each, one transaction
+//   await privo.baskets.sell({ legs: ["AAPL", "MSFT", "NVDA"], pct: 50 });              // half of each, to USDG
 import { encodeFunctionData, getAddress, isAddress, parseAbi, parseUnits, formatUnits } from "viem";
 import * as Swap from "./privo-swap.js";
 import * as Perps from "./privo-perps.js";
@@ -53,6 +55,8 @@ export class Privo {
       // after a cancel or expiry, lower it to what the bot's still-open orders need
       approval: (token = Swap.USDG.address) => Orders.approval(this.client, this._need(), token),
       revoke: (token = Swap.USDG.address, keep = 0n) => this._send(Orders.approveTx(token, BigInt(keep))) };
+    this.baskets = { quote: o => this._basketQuote(o), buy: o => this._basketBuy(o), quoteSell: o => this._basketSellQuote(o), sell: o => this._basketSell(o),
+      link: (legs, name) => Swap.basketLink(this._legs(legs), { name }), parse: link => Swap.parseBasketLink(link) };
     this.block = { request: o => this._blockRequest(o), answer: (link, price, o) => this._blockAnswer(link, price, o), check: (req, codes) => this._blockCheck(req, codes), settle: (req, quote) => this._blockSettle(req, quote) };
   }
 
@@ -97,6 +101,73 @@ export class Privo {
     const tx = Swap.buildSwap(q, { slippageBps: this.slippageBps, permit });
     const hash = await this._send(tx);
     return { hash, sym, side, quotedOut: q.out, feeUsdg: q.feeUsdg, route: q.route };
+  }
+
+  /* ---------- baskets (2 to 8 stock tokens in one router call, PRIVO fee once) ---------- */
+  // legs: ["AAPL", "MSFT"] for equal shares, [{ sym, pct }] with shares in percent adding up to 100, or a basket share link.
+  _legs(legs) {
+    if (typeof legs === "string") return Swap.parseBasketLink(legs).legs;
+    if (!Array.isArray(legs) || !legs.length) throw new Error("legs: a list of stock symbols, [{ sym, pct }], or a basket link");
+    if (legs.every(l => typeof l === "string")) {
+      const b = Math.floor(10000 / legs.length), r = 10000 - b * legs.length;
+      return legs.map((sym, i) => ({ sym, w: b + (i < r ? 1 : 0) }));
+    }
+    return legs.map(l => ({ sym: l.sym, w: l.w ?? Math.round(Number(l.pct) * 100) }));
+  }
+  // amount: USDG to spend in total (decimal string)
+  async _basketQuote({ legs, amount }) {
+    const q = await Swap.quoteBasket(this.client, { legs: this._legs(legs), amount: parseUnits(String(amount), Swap.USDG.decimals) });
+    return { ...q, feeUsdg: formatUnits(q.fee, Swap.USDG.decimals),
+      out: q.legs.map(l => ({ sym: l.sym, usdg: formatUnits(l.swapIn, Swap.USDG.decimals), tokens: formatUnits(l.grossOut, Swap.decimalsOf(l.sym)), route: Swap.routeLabel(l.pool) })) };
+  }
+  // One transaction: every stock lands in the wallet at or above its own slippage floor, or nothing is bought.
+  async _basketBuy({ legs, amount }) {
+    const me = this._need(), q = await this._basketQuote({ legs, amount });
+    const st = await Swap.approvalState(this.client, me, Swap.USDG.address, q.amount);
+    if (st.needErc20Approve) await this._send(Swap.approveTx(Swap.USDG.address));
+    let permit = null;
+    if (st.needPermit) {
+      const td = Swap.permitTypedData({ token: Swap.USDG.address, amount: q.amount, nonce: st.nonce });
+      permit = { message: td.message, signature: await this.wallet.signTypedData({ account: this.wallet.account, ...td }) };
+    }
+    const hash = await this._send(Swap.buildBasket(q, { slippageBps: this.slippageBps, permit }));
+    return { hash, feeUsdg: q.feeUsdg, legs: q.out };
+  }
+  // legs: symbols (sells pct% of the wallet's balance of each, default 100) or [{ sym, qty }] with token amounts.
+  async _sellLegs({ legs, pct = 100 }) {
+    if (!(pct > 0 && pct <= 100)) throw new Error("pct is above 0 and at most 100");
+    if (!Array.isArray(legs) || !legs.length) throw new Error("legs: stock symbols, or [{ sym, qty }]");
+    const me = this._need();
+    return Promise.all(legs.map(async l => {
+      const sym = typeof l === "string" ? l : l.sym;
+      if (!Object.hasOwn(Swap.MARKETS, sym)) throw new Error("Unknown spot market " + sym);
+      if (typeof l !== "string" && l.qty != null) return { sym, amount: parseUnits(String(l.qty), Swap.decimalsOf(sym)) };
+      const bal = await this.client.readContract({ address: Swap.MARKETS[sym].address, abi: ERC20, functionName: "balanceOf", args: [me] });
+      return { sym, amount: bal * BigInt(Math.round(pct * 100)) / 10000n };
+    }));
+  }
+  async _basketSellQuote(o) {
+    const q = await Swap.quoteBasketSell(this.client, { legs: await this._sellLegs(o) });
+    return { ...q, outUsdg: formatUnits(q.netOut, Swap.USDG.decimals), feeUsdg: formatUnits(q.fee, Swap.USDG.decimals),
+      out: q.legs.map(l => ({ sym: l.sym, tokens: formatUnits(l.amount, Swap.decimalsOf(l.sym)), usdg: formatUnits(l.grossOut, Swap.USDG.decimals), route: Swap.routeLabel(l.pool) })) };
+  }
+  // One transaction under one Permit2 PermitBatch signature: each stock sells on its own pool with its own floor, the fee is
+  // taken once, the rest of the USDG goes to the wallet, or nothing is sold. Each stock token is approved to Permit2 once.
+  async _basketSell(o) {
+    const me = this._need(), q = await this._basketSellQuote(o);
+    const items = [];
+    for (const l of q.legs) {
+      const token = Swap.MARKETS[l.sym].address, st = await Swap.approvalState(this.client, me, token, l.amount);
+      if (st.needErc20Approve) await this._send(Swap.approveTx(token));
+      if (st.needPermit) items.push({ token, amount: l.amount, nonce: st.nonce });
+    }
+    let permit = null;
+    if (items.length) {
+      const td = Swap.permitBatchTypedData({ items });
+      permit = { message: td.message, signature: await this.wallet.signTypedData({ account: this.wallet.account, ...td }) };
+    }
+    const hash = await this._send(Swap.buildBasketSell(q, { slippageBps: this.slippageBps, permit }));
+    return { hash, quotedUsdg: q.outUsdg, feeUsdg: q.feeUsdg, legs: q.out };
   }
 
   /* ---------- perps (Orderly, PRIVO builder account) ---------- */

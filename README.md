@@ -24,7 +24,7 @@ This repository holds the smart contract, the wallet-free client libraries the a
 | [`src/privo-orders.js`](src/privo-orders.js) | Limit orders and TWAP: EIP-712 orders, slice math (same as the contract), limit price to minimum output, order state, and the fill call a keeper sends (best pool quote, route never below the order's limit). |
 | [`src/privo-journal.js`](src/privo-journal.js) | Spot trade journal: trades from receipts or the Blockscout API, average-cost book and realized PnL per sale. |
 | [`src/privo-feed.js`](src/privo-feed.js) | Read-only market data: pool prices and candles (GeckoTerminal), Orderly perp stats, candles and max leverage per market. |
-| [`src/privo-sdk.js`](src/privo-sdk.js) | SDK for bots and AI agents: the `Privo` class over the modules above (spot buy/sell, limit and TWAP orders, perps connect/deposit/order, block request/answer/check/settle, read API). |
+| [`src/privo-sdk.js`](src/privo-sdk.js) | SDK for bots and AI agents: the `Privo` class over the modules above (spot buy/sell, baskets buy/sell/share links, limit and TWAP orders, perps connect/deposit/order, block request/answer/check/settle, read API). |
 | [`examples/`](examples) | Example bots, starting with a dip buyer. |
 | [`test/`](test) | Tests that run against mainnet state with `eth_call` and state overrides. They send no transactions. |
 | [`docs/block-desk.md`](docs/block-desk.md) | How the Block desk works, its rules and test results. |
@@ -48,6 +48,8 @@ const privo = new Privo({ wallet });
 
 await privo.spot.quote("TSLA", "buy", "100");        // 100 USDG in, with the 0.15% PRIVO fee
 await privo.spot.buy("TSLA", "100");
+await privo.baskets.buy({ legs: ["AAPL", "MSFT", "NVDA"], amount: "90" });  // one transaction, fee once
+await privo.baskets.sell({ legs: ["AAPL", "MSFT", "NVDA"], pct: 50 });       // half of each, to USDG
 const { key } = await privo.perps.connect();          // once; store key.secret privately, pass it back as perpsKey
 await privo.perps.order({ sym: "ETH", side: "BUY", qty: 0.01 });
 ```

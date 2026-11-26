@@ -130,6 +130,25 @@ const n0r = sent.length; await privo.orders.revoke();
 const rv = decodeFunctionData({ abi: erc, data: sent.at(-1).data });
 check(sent.length === n0r + 1 && sent.at(-1).to.toLowerCase() === Swap.USDG.address.toLowerCase() && rv.functionName === "approve" && rv.args[0] === Orders.ORDERS && rv.args[1] === 0n, "orders.revoke() sets the USDG approval for the Orders contract to 0");
 
+// baskets: buy three stocks in one router call, then sell half of two of them in one router call
+const bq = await privo.baskets.quote({ legs: ["AAPL", "MSFT", "NVDA"], amount: "90" });
+check(bq.out.length === 3 && bq.feeUsdg === "0.135" && bq.out.every(l => +l.tokens > 0), "baskets.quote: 90 USDG over three stocks, fee 0.135 USDG once");
+const nb = sent.length, bb = await privo.baskets.buy({ legs: [{ sym: "AAPL", pct: 50 }, { sym: "MSFT", pct: 30 }, { sym: "NVDA", pct: 20 }], amount: "90" });
+check(sent.length === nb + 1 && sent.at(-1).ok && sent.at(-1).to.toLowerCase() === Swap.ADDR.ROUTER.toLowerCase() && bb.hash === sent.at(-1).hash && bb.legs[0].usdg === "44.9325",
+  "baskets.buy: one router transaction on mainnet state (USDG already approved to Permit2), 50/30/20 split after the fee");
+await give(Swap.MARKETS.AAPL.address, parseUnits("0.2", 18)); await give(Swap.MARKETS.NVDA.address, parseUnits("0.3", 18));
+const sq = await privo.baskets.quoteSell({ legs: ["AAPL", "NVDA"], pct: 50 });
+check(sq.out[0].tokens === "0.1" && sq.out[1].tokens === "0.15" && +sq.outUsdg > 0, "baskets.quoteSell: half of each balance, " + sq.outUsdg + " USDG after the fee");
+const ns = sent.length, bs = await privo.baskets.sell({ legs: ["AAPL", "NVDA"], pct: 50 });
+// NVDA was approved to Permit2 by the spot sell above, so only AAPL needs its one-time approval
+check(sent.length === ns + 2 && sent[ns].to.toLowerCase() === Swap.MARKETS.AAPL.address.toLowerCase() && sent.slice(ns).every(s => s.ok) && sent.at(-1).to.toLowerCase() === Swap.ADDR.ROUTER.toLowerCase() && bs.hash === sent.at(-1).hash,
+  "baskets.sell: a one-time Permit2 approval only for the stock token that lacks one, then one router transaction under one PermitBatch signature");
+const ln = privo.baskets.link(["AAPL", "MSFT", "NVDA"], "My picks");
+const pl = privo.baskets.parse(ln);
+check(/\?basket=AAPL:33\.34,MSFT:33\.33,NVDA:33\.33&name=My%20picks#trade$/.test(ln) && pl.name === "My picks" && pl.legs.map(l => l.w).join() === "3334,3333,3333", "baskets.link and baskets.parse round-trip a basket");
+let badLegs = false; try { await privo.baskets.quote({ legs: [{ sym: "AAPL", pct: 60 }, { sym: "MSFT", pct: 30 }], amount: "10" }); } catch (e) { badLegs = /100%/.test(e.message); }
+check(badLegs, "shares that do not add up to 100% are refused");
+
 let noWallet = false; try { await new Privo().spot.buy("TSLA", "1"); } catch (e) { noWallet = /wallet/.test(e.message); }
 check(noWallet, "trading without a wallet is refused with a clear error");
 

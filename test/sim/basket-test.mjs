@@ -6,7 +6,7 @@
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { encodeFunctionData, parseAbi, pad, toHex, parseUnits, formatUnits } from "viem";
 import { basketEntries, receiptTransfers } from "../../src/privo-journal.js";
-import { CONFIG, ADDR, USDG, MARKETS, makeClient, quoteBasket, splitBasket, buildBasket, approvalState, permitTypedData, routeLabel, BASKET_MAX } from "../../src/privo-swap.js";
+import { CONFIG, ADDR, USDG, MARKETS, makeClient, quoteBasket, splitBasket, buildBasket, basketLink, parseBasketLink, approvalState, permitTypedData, routeLabel, BASKET_MAX } from "../../src/privo-swap.js";
 
 const c = makeClient(["https://robinhood-rpc.publicnode.com"]); // quotes, access lists and eth_simulateV1
 const acct = privateKeyToAccount(generatePrivateKey());
@@ -60,6 +60,15 @@ check(splitBasket(equal(["TSLA", "NVDA", "AAPL"]), 100_000000n).legs.reduce((a, 
 const bad1 = f => { try { f(); return false; } catch { return true; } };
 check(bad1(() => splitBasket([{ sym: "ETH", w: 5000 }, { sym: "TSLA", w: 5000 }], 10n ** 8n)) && bad1(() => splitBasket([{ sym: "TSLA", w: 5000 }, { sym: "TSLA", w: 5000 }], 10n ** 8n)), "crypto legs and duplicates are refused");
 check(bad1(() => splitBasket([{ sym: "TSLA", w: 5000 }, { sym: "NVDA", w: 4000 }], 10n ** 8n)) && bad1(() => splitBasket(equal(Object.keys(MARKETS).filter(s => MARKETS[s].kind === "stock").slice(0, BASKET_MAX + 1)), 10n ** 9n)), "shares must add up to 100%, and at most " + BASKET_MAX + " stocks");
+
+// 1b. share links
+const lk = basketLink([{ sym: "AAPL", w: 2500 }, { sym: "ANTHROPIC", w: 7500 }], { name: "AI <b>picks</b>" });
+const pk = parseBasketLink(lk);
+check(lk === "https://privoexchange.com/app.html?basket=AAPL:25,ANTHROPIC:75&name=AI%20bpicksb#trade" && pk.legs[1].sym === "ANTHROPIC" && pk.legs[1].w === 7500 && pk.name === "AI bpicksb",
+  "a share link carries symbols and shares; the name keeps only letters, digits and simple punctuation");
+check(parseBasketLink("?basket=aapl:33.34,msft:33.33,nvda:33.33").legs.map(l => l.sym + l.w).join() === "AAPL3334,MSFT3333,NVDA3333", "lower-case symbols and two-decimal shares are read");
+check(["?basket=AAPL:60,MSFT:30", "?basket=AAPL:50,FAKE:50", "?basket=AAPL:50,AAPL:50", "?basket=ETH:50,AAPL:50", "?basket=AAPL:100", "?basket=AAPL:50;MSFT:50", "?basket=" + Array.from({ length: 9 }, (_, i) => Object.keys(MARKETS)[i] + ":1").join(",")]
+  .every(x => bad1(() => parseBasketLink(x))), "links that break a basket rule are refused (not 100%, unknown or crypto market, duplicate, one stock, bad format, over 8)");
 
 // 2. every stock market, in baskets of 8, 40 USDG per leg
 const stocks = Object.keys(MARKETS).filter(s => MARKETS[s].kind === "stock");
