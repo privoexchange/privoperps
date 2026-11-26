@@ -212,7 +212,7 @@ export class Privo {
   }
 
   /* ---------- limit orders and TWAP (PrivoOrders contract, filled by PRIVO's keeper) ---------- */
-  // { sym, side: "buy"|"sell", amount (USDG to spend, or shares to sell), price (worst USDG per share), slices?, every? (seconds), days? }
+  // { sym, side: "buy"|"sell", amount (USDG to spend, or stock tokens to sell), price (worst USDG per stock token), slices?, every? (seconds), days? }
   // Approves the contract, signs the order (no gas) and hands it to PRIVO's keeper. Returns { hash, order, signature }: keep
   // it to check state or cancel. Every fill pays at least `price`; the keeper fills through the best pool, but the contract
   // lets the filler fill anywhere between the market and `price`, so set `price` to the worst price you accept. Prices and

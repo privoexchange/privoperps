@@ -3,7 +3,7 @@
 // An order sells `amountIn` of one token for at least `minAmountOut` of the other, in `slices` parts `interval` seconds
 // apart (slices = 1 is a limit order). USDG is always one side; the other is a stock token. The maker approves the
 // contract once and signs; a fill moves one slice at or better than the maker's limit, or reverts.
-import { parseAbi, encodeFunctionData, getAddress, isAddress, toHex, hashTypedData, recoverTypedDataAddress } from "viem";
+import { parseAbi, encodeFunctionData, getAddress, isAddress, toHex, hashTypedData, recoverAddress } from "viem";
 import { USDG, MARKETS, STOCK_DECIMALS, quote, fillRoute } from "./privo-swap.js";
 
 // Deterministic CREATE2 address of contracts/PrivoOrders.sol (salt "PRIVO Orders v1", test/orders/deploy-core.js).
@@ -56,6 +56,7 @@ export function newOrder({ maker, filler = KEEPER, open = false, sym, side, amou
   if (!isAddress(maker)) throw new Error("Connect a wallet first");
   if (side !== "buy" && side !== "sell") throw new Error("Pick buy or sell");
   if (!isAddress(filler)) throw new Error("Bad filler");
+  if (typeof open !== "boolean") throw new Error("open must be true or false"); // a string such as "false" is not read as yes
   // filler = address(0) lets anyone fill, at any price down to the limit: only when the caller asks for it explicitly
   if (getAddress(filler) === ZERO && !open) throw new Error("An order must name its filler (pass open: true for an anyone-can-fill order)");
   slices = Number(slices); interval = Number(interval); start = Number(start);
@@ -72,15 +73,15 @@ export function newOrder({ maker, filler = KEEPER, open = false, sym, side, amou
 }
 export const sideOf = o => (getAddress(o.tokenIn) === getAddress(USDG.address) ? "buy" : "sell");
 
-// Limit price in USDG per share -> minAmountOut, after the fee. Buy: (amountIn - fee) / price shares. Sell: amountIn * price - fee.
+// Limit price in USDG per stock token -> minAmountOut, after the fee. Buy: (amountIn - fee) / price tokens. Sell: amountIn * price - fee.
 export function minOutForPrice(side, amountIn, price) {
-  const p = BigInt(Math.round(Number(price) * 1e6)); // USDG per share, 6 decimals
+  const p = BigInt(Math.round(Number(price) * 1e6)); // USDG per stock token, 6 decimals
   if (!(p > 0n)) throw new Error("Set a limit price");
   if (side === "buy") return (amountIn - amountIn * FEE_BIPS / 10000n) * 10n ** 18n / p;
   const gross = amountIn * p / 10n ** 18n;
   return gross - gross * FEE_BIPS / 10000n;
 }
-// Worst average price an order accepts, USDG per share.
+// Worst average price an order accepts, USDG per stock token.
 export function limitPrice(o) {
   const sell = sideOf(o) === "sell";
   if (sell) return Number(o.minAmountOut * 10000n / (10000n - FEE_BIPS)) / 1e6 / (Number(o.amountIn) / 1e18);
@@ -151,15 +152,31 @@ export async function walletKind(client, addr) {
   const code = await client.getCode({ address: addr });
   return !code || code === "0x" ? "eoa" : code.toLowerCase().startsWith("0xef0100") ? "7702" : "contract";
 }
+// The contract's ECDSA rules (_validSignature): exactly 65 bytes r|s|v, v of 0 or 1 read as 27 or 28, s in the lower half
+// of the curve order (malleable signatures are refused), and ecrecover must give the maker. Libraries are looser (viem
+// recovers a high-s signature), so the check follows the contract byte for byte.
+const HALF_N = 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0n;
+async function ecdsaSigner(digest, signature) {
+  if (typeof signature !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(signature)) return null;
+  const s = BigInt("0x" + signature.slice(66, 130));
+  let v = parseInt(signature.slice(130, 132), 16);
+  if (v < 27) v += 27;
+  if (s > HALF_N || (v !== 27 && v !== 28)) return null;
+  return recoverAddress({ hash: digest, signature: { r: "0x" + signature.slice(2, 66), s: "0x" + signature.slice(66, 130), yParity: v - 27 } }).catch(() => null);
+}
+const MAGIC_WORD = "0x1626ba7e" + "0".repeat(56);
 // { ok, kind, reason }: would PrivoOrders accept this signature for this order?
 export async function signatureFillable(client, o, signature, contract = ORDERS) {
   const kind = await walletKind(client, o.maker);
   if (kind === "eoa") {
-    const signer = await recoverTypedDataAddress({ ...orderTypedData(o, contract), signature }).catch(() => null);
-    return signer && getAddress(signer) === getAddress(o.maker) ? { ok: true, kind } : { ok: false, kind, reason: "The signature does not match the order" };
+    const signer = await ecdsaSigner(orderHash(o, contract), signature);
+    return signer && getAddress(signer) === getAddress(o.maker) ? { ok: true, kind } : { ok: false, kind, reason: "The signature does not match the order, or is in a form the PrivoOrders contract refuses" };
   }
-  const magic = await client.readContract({ address: o.maker, abi: ERC1271, functionName: "isValidSignature", args: [orderHash(o, contract), signature] }).catch(() => null);
-  if (magic && magic.toLowerCase() === "0x1626ba7e") return { ok: true, kind };
+  // ERC-1271, as the contract reads it: asked by the PrivoOrders contract itself (a wallet may answer differently per caller),
+  // the call must succeed and its first 32-byte word must be exactly the magic value (Solidity's abi.decode refuses a bytes4
+  // with anything after its 4 bytes)
+  const ret = await client.call({ account: contract, to: o.maker, data: encodeFunctionData({ abi: ERC1271, functionName: "isValidSignature", args: [orderHash(o, contract), signature] }) }).then(r => r?.data || "0x").catch(() => "0x");
+  if (ret.length >= 66 && ret.slice(0, 66).toLowerCase() === MAGIC_WORD) return { ok: true, kind };
   return { ok: false, kind, reason: kind === "7702"
     ? "This wallet is an EIP-7702 smart account. The PrivoOrders contract checks such wallets through ERC-1271, and this account does not confirm the order, so it could never fill. Use a regular wallet for limit and TWAP orders."
     : "This smart wallet does not confirm the order signature (ERC-1271), so the PrivoOrders contract could never fill it." };

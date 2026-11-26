@@ -65,7 +65,7 @@ Amounts and prices are per stock token. Some stock tokens stand for more or less
 
 ## Smart wallets and EIP-7702
 
-The contract checks a signature with ECDSA only when the maker's address has no code. Any address with code is checked through ERC-1271 `isValidSignature`, including an EOA delegated through EIP-7702 (code starting `0xef0100`). If that account's code does not confirm the order, the order can never fill.
+The contract checks a signature with ECDSA only when the maker's address has no code. Any address with code is checked through ERC-1271 `isValidSignature`, including an EOA delegated through EIP-7702 (code starting `0xef0100`). If that account's code does not confirm the order, the order can never fill. Before an order is accepted, `signatureFillable()` checks it the way the contract will: for an address without code, exactly 65 bytes with a low `s` (a malleable high-`s` copy is refused) and `v` of 0, 1, 27 or 28; for an address with code, `isValidSignature` asked from the PrivoOrders address, with the whole 32-byte reply equal to the magic value.
 
 PRIVO's app, SDK and order API run the same check before they accept an order (`signatureFillable()` in `src/privo-orders.js`), and refuse it with a clear reason. The app and SDK sign first and check before asking for any approval, so no approval is spent on an order that could not fill.
 
@@ -113,4 +113,4 @@ Orders are dated from the chain head, so the test holds on an RPC whose head lag
 
 ## Review
 
-HEY Research Lab reviewed v1.4.0 at PRIVO's request: nothing Medium or higher. They found two Lows. The first was the price-inside-the-limit point above, which these docs had described wrongly. The second was TWAP slices catching up in one block. Both are now handled in the keeper and described here.
+HEY Research Lab reviewed v1.4.0 at PRIVO's request: nothing Medium or higher. They found two Lows. The first was the price-inside-the-limit point above, which these docs had described wrongly. The second was TWAP slices catching up in one block. Both remain in the deployed v1 contract. They are mitigated off chain by the keeper's routing, pacing and fill monitoring; a v2 contract would enforce them on chain.
