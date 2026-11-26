@@ -3,7 +3,7 @@
 // An order sells `amountIn` of one token for at least `minAmountOut` of the other, in `slices` parts `interval` seconds
 // apart (slices = 1 is a limit order). USDG is always one side; the other is a stock token. The maker approves the
 // contract once and signs; a fill moves one slice at or better than the maker's limit, or reverts.
-import { parseAbi, encodeFunctionData, getAddress, isAddress, toHex, hashTypedData } from "viem";
+import { parseAbi, encodeFunctionData, getAddress, isAddress, toHex, hashTypedData, recoverTypedDataAddress } from "viem";
 import { USDG, MARKETS, STOCK_DECIMALS, quote, fillRoute } from "./privo-swap.js";
 
 // Deterministic CREATE2 address of contracts/PrivoOrders.sol (salt "PRIVO Orders v1", test/orders/deploy-core.js).
@@ -141,6 +141,43 @@ export async function buildFill(client, o, signature, i, { contract = ORDERS, sl
   return { to: contract, slice: s, quote: q, expectedOut: q.netOut, fillable: q.grossOut >= limitGross,
     data: encodeFunctionData({ abi: ORDERS_ABI, functionName: "fill", args: [o, signature, route.commands, route.inputs] }) };
 }
+
+/* ---------- wallet checks (maker) ---------- */
+// PrivoOrders checks a signature with ECDSA only when the maker's address has no code. Any address with code, including
+// an EOA delegated through EIP-7702 (code 0xef0100…), is checked through ERC-1271 isValidSignature. So the order must be
+// checked the same way before it is accepted, or it would wait forever and never fill.
+const ERC1271 = parseAbi(["function isValidSignature(bytes32 hash, bytes signature) view returns (bytes4)"]);
+export async function walletKind(client, addr) {
+  const code = await client.getCode({ address: addr });
+  return !code || code === "0x" ? "eoa" : code.toLowerCase().startsWith("0xef0100") ? "7702" : "contract";
+}
+// { ok, kind, reason }: would PrivoOrders accept this signature for this order?
+export async function signatureFillable(client, o, signature, contract = ORDERS) {
+  const kind = await walletKind(client, o.maker);
+  if (kind === "eoa") {
+    const signer = await recoverTypedDataAddress({ ...orderTypedData(o, contract), signature }).catch(() => null);
+    return signer && getAddress(signer) === getAddress(o.maker) ? { ok: true, kind } : { ok: false, kind, reason: "The signature does not match the order" };
+  }
+  const magic = await client.readContract({ address: o.maker, abi: ERC1271, functionName: "isValidSignature", args: [orderHash(o, contract), signature] }).catch(() => null);
+  if (magic && magic.toLowerCase() === "0x1626ba7e") return { ok: true, kind };
+  return { ok: false, kind, reason: kind === "7702"
+    ? "This wallet is an EIP-7702 smart account. The PrivoOrders contract checks such wallets through ERC-1271, and this account does not confirm the order, so it could never fill. Use a regular wallet for limit and TWAP orders."
+    : "This smart wallet does not confirm the order signature (ERC-1271), so the PrivoOrders contract could never fill it." };
+}
+
+/* ---------- approvals (maker) ---------- */
+// Amount of tokenIn an order can still pull: the slices not filled yet (0 once it is cancelled, expired or done).
+export function remainingIn(o, st) {
+  if (!st || !st.open) return 0n;
+  return o.amountIn - (o.amountIn / BigInt(o.slices)) * BigInt(st.filled);
+}
+// What a maker's open orders still need approved, per token: { [tokenIn]: amount }. items: [{ o, st }].
+export function approvalNeeds(items) {
+  const need = {};
+  for (const { o, st } of items) { const k = getAddress(o.tokenIn); need[k] = (need[k] || 0n) + remainingIn(o, st); }
+  return need;
+}
+export const approval = (client, owner, token, contract = ORDERS) => client.readContract({ address: token, abi: ERC20, functionName: "allowance", args: [owner, contract] });
 
 /* ---------- transactions (maker) ---------- */
 export async function needsApproval(client, owner, token, amount, contract = ORDERS) {

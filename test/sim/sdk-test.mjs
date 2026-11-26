@@ -113,7 +113,7 @@ globalThis.fetch = async (url, init = {}) => {
   if (init.method === "POST") { posted = JSON.parse(init.body); return new Response(JSON.stringify({ hash: "0x" + "cd".repeat(32) })); }
   return new Response(JSON.stringify({ contract: Orders.ORDERS, keeper: KEEPER }));
 };
-sim.getCode = async () => "0x6080";
+sim.getCode = async ({ address } = {}) => (address && address.toLowerCase() === acct.address.toLowerCase() ? "0x" : "0x6080"); // the bot is a plain EOA
 let refused = ""; try { await privo.orders.limit({ sym: "TSLA", side: "buy", amount: "100", price: 300 }); } catch (e) { refused = e.message; }
 check(/unexpected keeper/.test(refused) && posted === null, "the SDK refuses to sign when the order API names any keeper but PRIVO's pinned one");
 KEEPER = Orders.KEEPER;
@@ -126,6 +126,9 @@ const ap = decodeFunctionData({ abi: erc, data: sent.at(-1).data });
 check(sent.length === n0o + 1 && sent.at(-1).to.toLowerCase() === Swap.USDG.address.toLowerCase() && ap.args[0] === Orders.ORDERS && ap.args[1] >= parseUnits("100", 6), "it approves the Orders contract for the USDG it may spend, one transaction");
 const tw = await privo.orders.twap({ sym: "TSLA", side: "sell", amount: "3", price: 400, slices: 6, every: 600, days: 1 });
 check(tw.order.slices === 6 && tw.order.interval === 600, "orders.twap splits the order into slices");
+const n0r = sent.length; await privo.orders.revoke();
+const rv = decodeFunctionData({ abi: erc, data: sent.at(-1).data });
+check(sent.length === n0r + 1 && sent.at(-1).to.toLowerCase() === Swap.USDG.address.toLowerCase() && rv.functionName === "approve" && rv.args[0] === Orders.ORDERS && rv.args[1] === 0n, "orders.revoke() sets the USDG approval for the Orders contract to 0");
 
 let noWallet = false; try { await new Privo().spot.buy("TSLA", "1"); } catch (e) { noWallet = /wallet/.test(e.message); }
 check(noWallet, "trading without a wallet is refused with a clear error");

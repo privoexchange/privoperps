@@ -48,7 +48,11 @@ export class Privo {
     this.perps = { connect: o => this._perpsConnect(o), deposit: a => this._perpsDeposit(a), order: o => this._perpsOrder(o), positions: () => this._perps(Perps.positions),
       openOrders: () => this._perps(Perps.openOrders), cancel: (orderId, sym) => this._perps((k, id) => Perps.cancelOrder(k, id, orderId, Perps.perpSymbol(sym))),
       holdings: () => this._perps(Perps.holdings), revokeKey: () => this._perps((k, id) => Perps.revokeKey(k, id)) };
-    this.orders = { limit: o => this._orderPlace({ ...o, slices: 1 }), twap: o => this._orderPlace(o), state: rec => Orders.orderState(this.client, Orders.fromJson(rec.order)), cancel: rec => this._send(Orders.cancelTx(rec.order.nonce)) };
+    this.orders = { limit: o => this._orderPlace({ ...o, slices: 1 }), twap: o => this._orderPlace(o), state: rec => Orders.orderState(this.client, Orders.fromJson(rec.order)), cancel: rec => this._send(Orders.cancelTx(rec.order.nonce)),
+      // approval left to the PrivoOrders contract for a token (default USDG), and setting it to `keep` (default 0):
+      // after a cancel or expiry, lower it to what the bot's still-open orders need
+      approval: (token = Swap.USDG.address) => Orders.approval(this.client, this._need(), token),
+      revoke: (token = Swap.USDG.address, keep = 0n) => this._send(Orders.approveTx(token, BigInt(keep))) };
     this.block = { request: o => this._blockRequest(o), answer: (link, price, o) => this._blockAnswer(link, price, o), check: (req, codes) => this._blockCheck(req, codes), settle: (req, quote) => this._blockSettle(req, quote) };
   }
 
@@ -151,9 +155,12 @@ export class Privo {
     const amountIn = parseUnits(String(amount), side === "buy" ? Swap.USDG.decimals : Swap.STOCK_DECIMALS);
     const o = Orders.newOrder({ maker: me, filler: Orders.KEEPER, sym, side, amountIn, minAmountOut: Orders.minOutForPrice(side, amountIn, price), slices, interval: slices > 1 ? every : 0, hours: days * 24 });
     if (!(await this.client.getCode({ address: Orders.ORDERS }))) throw new Error("The PrivoOrders contract is not deployed yet");
-    const allowance = await this.client.readContract({ address: o.tokenIn, abi: ERC20, functionName: "allowance", args: [me, Orders.ORDERS] });
-    if (allowance < (1n << 200n)) await this._send(Orders.approveTx(o.tokenIn, allowance + o.amountIn));
+    // sign first (no gas) and check it the way the contract will (ERC-1271 for wallets with code, EIP-7702 included)
     const signature = await this.wallet.signTypedData({ account: this.wallet.account, ...Orders.orderTypedData(o) });
+    const sc = await Orders.signatureFillable(this.client, o, signature);
+    if (!sc.ok) throw new Error(sc.reason);
+    const allowance = await Orders.approval(this.client, me, o.tokenIn);
+    if (allowance < (1n << 200n)) await this._send(Orders.approveTx(o.tokenIn, allowance + o.amountIn));
     const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ order: Orders.toJson(o), signature }) });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || "PRIVO could not take the order");

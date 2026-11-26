@@ -63,6 +63,31 @@ An order signed through another client can step outside these, so use PRIVO's co
 
 Amounts and prices are per stock token. Some stock tokens stand for more or less than one share: their ERC-8056 `uiMultiplier()` is not 1. Convert a share price with that multiplier before you set a limit.
 
+## Smart wallets and EIP-7702
+
+The contract checks a signature with ECDSA only when the maker's address has no code. Any address with code is checked through ERC-1271 `isValidSignature`, including an EOA delegated through EIP-7702 (code starting `0xef0100`). If that account's code does not confirm the order, the order can never fill.
+
+PRIVO's app, SDK and order API run the same check before they accept an order (`signatureFillable()` in `src/privo-orders.js`), and refuse it with a clear reason. The app and SDK sign first and check before asking for any approval, so no approval is spent on an order that could not fill.
+
+## Approvals
+
+Each order approves the contract for its amount on top of what is already approved. Cancelling or letting an order expire leaves that approval in place. Only the filler you named can use it, and only inside a signed order, but you can lower it at any time:
+
+- In the app, the order list shows any approval left beyond what your open orders still need, with a button to lower it to that amount, or to revoke it.
+- In the SDK, `orders.approval(token)` reads it and `orders.revoke(token, keep)` sets it to `keep` (default 0).
+
+Lowering it below what an open order needs stops that order from filling.
+
+## Contract notes
+
+The deployed v1 is immutable. Three behaviours worth knowing:
+
+- **Tokens sent to the contract by mistake cannot be recovered.** It has no owner and no sweep function. Never send tokens to it directly; approve it instead.
+- **The minimum is checked on what the contract receives, not on what reaches the maker.** With today's stock tokens these are the same amount. If a stock token ever added a transfer fee, a buyer could receive slightly less than the slice minimum.
+- **The buy-side fee rounds down to 0 for slices under 0.000667 USDG.** Such slices are far below any real order size.
+
+A v2 contract would add the route and spacing rules above, check the maker's balance change, and accept an EIP-7702 account's own ECDSA signature.
+
 ## Fee
 
 0.15% of the USDG side of each fill (`FEE_BIPS = 15`, a constant), the same as PRIVO spot. It is sent to the PRIVO fee Safe `0xCc05…1418`.
