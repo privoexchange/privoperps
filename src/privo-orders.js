@@ -16,7 +16,7 @@ export const MAX_DAYS = 30;                // an order lives at most this long
 // PRIVO's keeper, pinned here: the app and the SDK sign it as the filler and refuse any other address the API returns.
 // The filler picks the route and the moment of each fill, and with them the price anywhere between the market and the
 // maker's limit. So an order should name only a filler the maker trusts, and its limit should be the worst price they accept.
-export const KEEPER = getAddress("0x30feed4ee19955b50c1794e0f8da23804ca548de");
+export const KEEPER = getAddress("0x41700141dafd7d043c8fc8b7f55e2fc1df503a3f"); // Privy server wallet, policy: PrivoOrders.fill only (PRIVO server)
 export const ORDERS_ABI = parseAbi([
   "function fill((address maker,address filler,address tokenIn,address tokenOut,uint256 amountIn,uint256 minAmountOut,uint32 slices,uint32 interval,uint64 start,uint64 deadline,uint256 nonce) o, bytes signature, bytes commands, bytes[] inputs) returns (uint256)",
   "function cancel(uint256 nonce)",

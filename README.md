@@ -62,7 +62,8 @@ The perps trading key places and cancels orders for 30 days and cannot withdraw.
 |---|---|
 | PrivoBlockDesk | [`0x8D94fCe2925EBA2448DA28f9461c8b644c26b8e7`](https://robinhoodchain.blockscout.com/address/0x8D94fCe2925EBA2448DA28f9461c8b644c26b8e7) |
 | PrivoOrders | [`0x18dA607Db67Bc9Cc4F2F5a4b26d09788b47Cf60A`](https://robinhoodchain.blockscout.com/address/0x18dA607Db67Bc9Cc4F2F5a4b26d09788b47Cf60A) |
-| PRIVO keeper (fills orders, holds only gas ETH) | [`0x30feed4ee19955b50c1794e0f8da23804ca548de`](https://robinhoodchain.blockscout.com/address/0x30feed4ee19955b50c1794e0f8da23804ca548de) |
+| PRIVO keeper (fills orders, holds only gas ETH; Privy server wallet that may only sign `PrivoOrders.fill`) | [`0x41700141DAFd7d043c8FC8b7f55e2Fc1dF503a3f`](https://robinhoodchain.blockscout.com/address/0x41700141DAFd7d043c8FC8b7f55e2Fc1dF503a3f) |
+| Previous keeper (fills only orders signed before 26 Nov 2026) | [`0x30feed4ee19955b50c1794e0f8da23804ca548de`](https://robinhoodchain.blockscout.com/address/0x30feed4ee19955b50c1794e0f8da23804ca548de) |
 | $PRIVO token (ERC-20, 18 decimals) | [`0xD5eE65798eb4E0528CdF9B6C23b663d8a2276dA0`](https://robinhoodchain.blockscout.com/token/0xD5eE65798eb4E0528CdF9B6C23b663d8a2276dA0) |
 | PRIVO fee wallet (Safe multisig) | [`0xCc051cf47547386bA147FDDfcBCFE00E791C1418`](https://robinhoodchain.blockscout.com/address/0xCc051cf47547386bA147FDDfcBCFE00E791C1418) |
 | Orderly vault | [`0x816f722424b49cf1275cc86da9840fbd5a6167e9`](https://robinhoodchain.blockscout.com/address/0x816f722424b49cf1275cc86da9840fbd5a6167e9) |
