@@ -25,10 +25,50 @@ This repository holds the smart contract, the wallet-free client libraries the a
 | [`src/privo-journal.js`](src/privo-journal.js) | Spot trade journal: trades from receipts or the Blockscout API, average-cost book and realized PnL per sale. |
 | [`src/privo-feed.js`](src/privo-feed.js) | Read-only market data: pool prices and candles (GeckoTerminal), Orderly perp stats, candles and max leverage per market. |
 | [`src/privo-sdk.js`](src/privo-sdk.js) | SDK for bots and AI agents: the `Privo` class over the modules above (spot buy/sell, baskets buy/sell/share links, limit and TWAP orders, perps connect/deposit/order, block request/answer/check/settle, read API). |
+| [`mcp/privo-mcp.mjs`](mcp/privo-mcp.mjs) | MCP server (`privo-mcp`) so any MCP-capable AI agent can read PRIVO markets and trade with its own wallet, with a per-trade USDG limit. |
 | [`examples/`](examples) | Example bots, starting with a dip buyer. |
 | [`test/`](test) | Tests that run against mainnet state with `eth_call` and state overrides. They send no transactions. |
 | [`docs/block-desk.md`](docs/block-desk.md) | How the Block desk works, its rules and test results. |
 | [`docs/orders.md`](docs/orders.md) | How limit orders and TWAP work, what the keeper can and cannot do, and test results. |
+
+## MCP server for AI agents
+
+Any agent that speaks the [Model Context Protocol](https://modelcontextprotocol.io) (Claude, Cursor and other MCP clients) can trade on PRIVO through `privo-mcp`. It runs on the agent's machine over stdio and signs with the agent's own wallet key, which never leaves that machine and is never returned to the model. Without a key it is read-only.
+
+```bash
+# Claude Code (Node 22+)
+claude mcp add privo -e PRIVO_PRIVATE_KEY=0x... -e PRIVO_MAX_USDG=50 -- npx -y -p github:privoexchange/privoperps privo-mcp
+```
+
+Other clients (Claude Desktop, Cursor and so on) take the same command in their `mcpServers` config:
+
+```json
+{ "mcpServers": { "privo": {
+  "command": "npx", "args": ["-y", "-p", "github:privoexchange/privoperps", "privo-mcp"],
+  "env": { "PRIVO_PRIVATE_KEY": "0x...", "PRIVO_MAX_USDG": "50" } } } }
+```
+
+| Tool | What it does |
+|---|---|
+| `privo_markets`, `privo_prices`, `privo_arena` | Markets, pool and perps prices, Arena leaderboard (read API) |
+| `privo_wallet` | The agent's address, non-zero balances and limits |
+| `privo_quote`, `privo_quote_basket` | Spot and basket quotes: estimated and minimum output, PRIVO fee, route |
+| `privo_buy`, `privo_sell` | Spot through Uniswap with the 0.15% PRIVO fee (`sell` takes `"all"`) |
+| `privo_basket_buy`, `privo_basket_sell` | 2 to 8 stock tokens in one transaction, all or nothing |
+| `privo_limit_order`, `privo_twap_order`, `privo_orders`, `privo_cancel_order` | Limit and TWAP through PrivoOrders, filled by PRIVO's keeper, never worse than the price |
+| `privo_perps_connect`, `privo_perps_deposit`, `privo_perps_order`, `privo_perps_account`, `privo_perps_cancel` | Orderly perps; the 30-day trading key is saved on the agent's machine and cannot withdraw |
+
+| Setting | Default | |
+|---|---|---|
+| `PRIVO_PRIVATE_KEY` | none (read-only) | The agent's own wallet key |
+| `PRIVO_MAX_USDG` | 100 | Largest trade, in USDG: what a buy spends, what a sale is quoted to bring back, a perps deposit. Larger trades are refused before anything is signed |
+| `PRIVO_MAX_PERPS_USDG` | 5 x `PRIVO_MAX_USDG` | Largest perps order notional at the mark price |
+| `PRIVO_SLIPPAGE_BPS` | 50 | Spot and basket slippage limit, 1 to 500 |
+| `PRIVO_READ_ONLY` | off | `1` offers only the read tools, even with a key |
+| `PRIVO_RPC` | PRIVO's list | Comma-separated Robinhood Chain RPC URLs |
+| `PRIVO_DATA_DIR` | `~/.privo-mcp` | Where the perps trading key and placed orders are kept (files readable only by you) |
+
+Use a separate wallet that holds only what the agent may trade, plus a little ETH for gas. Every trade is real and on chain. Trading tools are marked destructive, so MCP clients ask before running them unless you allow them.
 
 ## SDK for bots and agents
 
@@ -96,6 +136,7 @@ node test/blockdesk/ui-core-test.mjs   # client library against the deployed con
 node test/blockdesk/deploy-test.mjs    # deployed bytecode matches this build
 node test/orders/orders-test.mjs       # PrivoOrders on mainnet state: limit buy/sell, v3 and v4 pools, TWAP slices and timing, every refusal
 node test/orders/deploy-test.mjs       # PrivoOrders bytecode on chain matches this build
+node test/mcp/mcp-test.mjs             # MCP server over stdio: read tools, limits and refusals, and privo_buy / privo_basket_buy transactions simulated on mainnet state
 node test/sim/livetest.mjs             # spot swaps with the PRIVO fee for every market
 node test/sim/perpstest.mjs            # Orderly account IDs, vault deposits, key and request signing
 node test/sim/perps-pro-test.mjs       # stop, TP/SL, bracket, post-only/IOC and websocket auth (Orderly stubbed)
