@@ -22,7 +22,9 @@ const maker = privateKeyToAccount(generatePrivateKey()), stranger = privateKeyTo
 const erc = parseAbi(["function balanceOf(address) view returns (uint256)", "function allowance(address,address) view returns (uint256)"]);
 let bad = 0;
 const check = (cond, msg) => { console.log((cond ? "  ok    " : "  FAIL  ") + msg); if (!cond) bad++; };
-const now = Math.floor(Date.now() / 1000);
+// Orders are dated from the chain head, not the wall clock, so the test holds on an RPC whose head lags or leads it.
+const now = Number((await c.getBlock()).timestamp);
+const mkOrder = x => newOrder({ start: now, ...x });
 
 const slotCache = {};
 async function slot(token, data) {
@@ -60,12 +62,12 @@ async function run({ o, calls, bal = null, allow = null, extraState = {}, from =
 const u = v => formatUnits(v, 6), t = v => formatUnits(v, 18);
 
 // Market price for TSLA from a small quote, to place limits around it.
-const probeQ = await buildFill(qc, newOrder({ maker: maker.address, filler: PROBE, sym: "TSLA", side: "buy", amountIn: parseUnits("100", 6), minAmountOut: 1n }), "0x", 0, { contract: ORD });
+const probeQ = await buildFill(qc, mkOrder({ maker: maker.address, filler: PROBE, sym: "TSLA", side: "buy", amountIn: parseUnits("100", 6), minAmountOut: 1n }), "0x", 0, { contract: ORD });
 const tslaPx = 100 * 0.9985 / Number(formatUnits(probeQ.quote.grossOut, 18));
 console.log(`  TSLA pool price ~ ${tslaPx.toFixed(2)} USDG`);
 
 // 1. Limit buy: 100 USDG for TSLA, limit 2% above market (fills now).
-let o = newOrder({ maker: maker.address, filler: PROBE, sym: "TSLA", side: "buy", amountIn: parseUnits("100", 6), minAmountOut: minOutForPrice("buy", parseUnits("100", 6), tslaPx * 1.02) });
+let o = mkOrder({ maker: maker.address, filler: PROBE, sym: "TSLA", side: "buy", amountIn: parseUnits("100", 6), minAmountOut: minOutForPrice("buy", parseUnits("100", 6), tslaPx * 1.02) });
 let sig = await sign(o);
 let r = await run({ o, calls: [await fillData(o, sig, 0)] });
 check(errName(r.results[0]) === "OK", "limit buy 100 USDG of TSLA fills when the pool is inside the limit");
@@ -74,16 +76,16 @@ check(r.stock.maker >= o.minAmountOut && r.stock.ord === 0n && r.usdg.ord === 0n
 check(Math.abs(limitPrice(o) - tslaPx * 1.02) / tslaPx < 0.001, "limitPrice() reads back the price the order was made with");
 
 // 2. Limit buy above the market price does not fill: the pool would pay less than the limit.
-o = newOrder({ maker: maker.address, filler: PROBE, sym: "TSLA", side: "buy", amountIn: parseUnits("100", 6), minAmountOut: minOutForPrice("buy", parseUnits("100", 6), tslaPx * 0.95) });
+o = mkOrder({ maker: maker.address, filler: PROBE, sym: "TSLA", side: "buy", amountIn: parseUnits("100", 6), minAmountOut: minOutForPrice("buy", parseUnits("100", 6), tslaPx * 0.95) });
 sig = await sign(o);
 const notYet = await buildFill(qc, o, sig, 0, { contract: ORD });
 r = await run({ o, calls: [notYet.data] });
 check(!notYet.fillable && errName(r.results[0]) !== "OK" && r.usdg.maker === 0n, "a buy limit 5% below market is not fillable yet; a fill attempt reverts and nothing moves");
 
 // 3. Limit sell 1 NVDA for USDG, 2% below market: fee comes out of the USDG.
-const nq = await buildFill(qc, newOrder({ maker: maker.address, filler: PROBE, sym: "NVDA", side: "sell", amountIn: parseUnits("1", 18), minAmountOut: 1n }), "0x", 0, { contract: ORD });
+const nq = await buildFill(qc, mkOrder({ maker: maker.address, filler: PROBE, sym: "NVDA", side: "sell", amountIn: parseUnits("1", 18), minAmountOut: 1n }), "0x", 0, { contract: ORD });
 const nvdaPx = Number(formatUnits(nq.quote.grossOut, 6));
-o = newOrder({ maker: maker.address, filler: PROBE, sym: "NVDA", side: "sell", amountIn: parseUnits("1", 18), minAmountOut: minOutForPrice("sell", parseUnits("1", 18), nvdaPx * 0.98) });
+o = mkOrder({ maker: maker.address, filler: PROBE, sym: "NVDA", side: "sell", amountIn: parseUnits("1", 18), minAmountOut: minOutForPrice("sell", parseUnits("1", 18), nvdaPx * 0.98) });
 sig = await sign(o);
 r = await run({ o, calls: [await fillData(o, sig, 0)] });
 check(errName(r.results[0]) === "OK" && r.stock.maker === -parseUnits("1", 18), `limit sell 1 NVDA fills (pool ~ ${nvdaPx.toFixed(2)} USDG)`);
@@ -91,7 +93,7 @@ const gross = r.usdg.maker + r.usdg.fee;
 check(r.usdg.maker >= o.minAmountOut && r.usdg.fee === gross * 15n / 10000n && r.usdg.ord === 0n, `maker gets ${u(r.usdg.maker)} USDG after a ${u(r.usdg.fee)} USDG fee (0.15%), nothing stays in the contract`);
 
 // 4. TWAP: 3 slices of 100 USDG, 10 minutes apart.
-o = newOrder({ maker: maker.address, filler: PROBE, sym: "TSLA", side: "buy", amountIn: parseUnits("300", 6), minAmountOut: minOutForPrice("buy", parseUnits("300", 6), tslaPx * 1.03), slices: 3, interval: 600, start: now - 60 });
+o = mkOrder({ maker: maker.address, filler: PROBE, sym: "TSLA", side: "buy", amountIn: parseUnits("300", 6), minAmountOut: minOutForPrice("buy", parseUnits("300", 6), tslaPx * 1.03), slices: 3, interval: 600, start: now - 60 });
 sig = await sign(o);
 r = await run({ o, calls: [await fillData(o, sig, 0), await fillData(o, sig, 1)] });
 check(errName(r.results[0]) === "OK" && errName(r.results[1]) === "TooEarly" && r.usdg.maker === -parseUnits("100", 6), "TWAP: slice 1 fills, slice 2 is refused before its time (TooEarly)");
@@ -99,11 +101,11 @@ o = { ...o, start: BigInt(now - 1300) }; sig = await sign(o);
 r = await run({ o, calls: [await fillData(o, sig, 0), await fillData(o, sig, 1), await fillData(o, sig, 2), await fillData(o, sig, 2)] });
 check(r.results.slice(0, 3).every(x => errName(x) === "OK") && errName(r.results[3]) === "OrderDone" && r.usdg.maker === -parseUnits("300", 6), "TWAP: all 3 due slices fill, a 4th is refused (OrderDone), 300 USDG spent in total");
 check(r.usdg.fee === parseUnits("0.45", 6) && r.stock.maker >= o.minAmountOut, `TWAP fee 0.45 USDG over 3 slices, maker got ${t(r.stock.maker)} TSLA (>= limit)`);
-const odd = newOrder({ maker: maker.address, sym: "TSLA", side: "buy", amountIn: 100n, minAmountOut: 7n, slices: 3, interval: 60 });
+const odd = mkOrder({ maker: maker.address, sym: "TSLA", side: "buy", amountIn: 100n, minAmountOut: 7n, slices: 3, interval: 60 });
 check(slice(odd, 0).amountIn === 33n && slice(odd, 2).amountIn === 34n && slice(odd, 0).minOut + slice(odd, 1).minOut + slice(odd, 2).minOut >= 7n, "slices split the remainder into the last one; slice minimums round up");
 
 // 5. Refusals.
-o = newOrder({ maker: maker.address, filler: PROBE, sym: "TSLA", side: "buy", amountIn: parseUnits("50", 6), minAmountOut: minOutForPrice("buy", parseUnits("50", 6), tslaPx * 1.02) });
+o = mkOrder({ maker: maker.address, filler: PROBE, sym: "TSLA", side: "buy", amountIn: parseUnits("50", 6), minAmountOut: minOutForPrice("buy", parseUnits("50", 6), tslaPx * 1.02) });
 sig = await sign(o);
 const good = await fillData(o, sig, 0);
 r = await run({ o, calls: [good], from: stranger.address });
@@ -127,13 +129,13 @@ r = await run({ o: anyone, calls: [await fillData(anyone, anySig, 0)] });
 check(errName(r.results[0]) === "OK", "an order with no named filler can be filled by anyone");
 
 // 6. Uniswap v4 market (AAPL has only a v4 pool), and the contract's own limit check behind a loose route.
-const aq = await buildFill(qc, newOrder({ maker: maker.address, filler: PROBE, sym: "AAPL", side: "buy", amountIn: parseUnits("50", 6), minAmountOut: 1n }), "0x", 0, { contract: ORD });
+const aq = await buildFill(qc, mkOrder({ maker: maker.address, filler: PROBE, sym: "AAPL", side: "buy", amountIn: parseUnits("50", 6), minAmountOut: 1n }), "0x", 0, { contract: ORD });
 const aaplPx = 50 * 0.9985 / Number(formatUnits(aq.quote.grossOut, 18));
-o = newOrder({ maker: maker.address, filler: PROBE, sym: "AAPL", side: "buy", amountIn: parseUnits("50", 6), minAmountOut: minOutForPrice("buy", parseUnits("50", 6), aaplPx * 1.02) });
+o = mkOrder({ maker: maker.address, filler: PROBE, sym: "AAPL", side: "buy", amountIn: parseUnits("50", 6), minAmountOut: minOutForPrice("buy", parseUnits("50", 6), aaplPx * 1.02) });
 sig = await sign(o);
 r = await run({ o, calls: [await fillData(o, sig, 0)] });
 check(errName(r.results[0]) === "OK" && r.stock.maker >= o.minAmountOut && r.usdg.fee === parseUnits("0.075", 6), `limit buy on a Uniswap v4 pool (AAPL ~ ${aaplPx.toFixed(2)}) fills, fee 0.075 USDG`);
-o = newOrder({ maker: maker.address, filler: PROBE, sym: "TSLA", side: "buy", amountIn: parseUnits("100", 6), minAmountOut: minOutForPrice("buy", parseUnits("100", 6), tslaPx * 0.99) });
+o = mkOrder({ maker: maker.address, filler: PROBE, sym: "TSLA", side: "buy", amountIn: parseUnits("100", 6), minAmountOut: minOutForPrice("buy", parseUnits("100", 6), tslaPx * 0.99) });
 sig = await sign(o);
 const { fillRoute, quote: swapQuote } = await import("../../src/privo-swap.js");
 const loose = fillRoute(await swapQuote(qc, { sym: "TSLA", side: "buy", amount: parseUnits("100", 6) }), { slippageBps: 500 });

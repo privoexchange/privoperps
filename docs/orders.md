@@ -12,7 +12,7 @@ PRIVO's spot ticket can place a **limit order** (buy at or below a price, or sel
 
    Signing costs no gas. Nothing moves yet, and the tokens stay in the trader's wallet.
 2. **The order waits off chain.** PRIVO's server keeps the signed order for its keeper. It is not on the public chain.
-3. **The keeper fills when the price allows.** Every minute, PRIVO's keeper checks each due slice. It quotes the best Uniswap pool and calls `fill` only when the pool can pay at least that slice's share of `minAmountOut`.
+3. **The keeper fills when the price allows.** Every minute, PRIVO's keeper checks each due slice. It quotes the best Uniswap pool and calls `fill` only when the pool can pay at least that slice's share of `minAmountOut`. Its route goes through that pool with a 0.5% slippage bound, never below the slice's limit.
 
    `fill` does the following, in one transaction:
    - takes the 0.15% fee on the USDG side;
@@ -24,21 +24,44 @@ PRIVO's spot ticket can place a **limit order** (buy at or below a price, or sel
 
 | Rule in `PrivoOrders.fill` | Effect |
 |---|---|
-| Only the `filler` the maker signed may fill (or anyone, if the maker signed `address(0)`) | PRIVO's app names PRIVO's keeper, so no one else can pick the moment or the route |
+| Only the `filler` the maker signed may fill (or anyone, if the maker signed `address(0)`) | PRIVO's app and SDK always name PRIVO's keeper, pinned in `src/privo-orders.js`, and refuse any other address. `newOrder()` refuses `address(0)` unless the caller passes `open: true`. The filler picks the route and the moment, and with them the price inside your limit (see below) |
 | The EIP-712 signature covers every field | A filler cannot change the limit, the size, the schedule or the tokens (`BadSignature`) |
-| Slice *i* fills only after `start + i × interval`, once, and never after the deadline | No early, repeated or late slices (`TooEarly`, `OrderDone`, `Expired`) |
+| Slice *i* fills only after `start + i × interval`, once, and never after the deadline | No early or repeated slices, and none after the deadline (`TooEarly`, `OrderDone`, `Expired`). The contract does not stop overdue slices from filling close together: spacing after the due time is up to the keeper (see below) |
 | The maker must receive at least the slice's share of `minAmountOut`, rounded up, after the fee | No fill below the maker's own price (`BelowLimit`) |
 | The route must spend the whole slice: the router's balance of the input token may not grow | Nothing of the slice is left in the router for someone else to sweep (`InputLeftInRouter`) |
 | `cancel(nonce)` by the maker | Every later fill reverts (`OrderCancelledError`) |
 | No owner, admin, upgrade or pause; the contract never holds funds between transactions | There is no key that can move users' tokens |
 
-The keeper wallet ([`0x30fe…48de`](https://robinhoodchain.blockscout.com/address/0x30feed4ee19955b50c1794e0f8da23804ca548de)) holds only ETH for gas. If its key were stolen, the thief could only fill orders at or better than each maker's price, at the slice times the makers chose. They could pick the route and the moment within those limits, but never the price.
+### Your limit is the worst price you accept
+
+The contract guarantees that every fill pays at least your limit. It does not tie a fill to the pool's price. The filler supplies the route, so a fill can land anywhere between the market and your limit: a hostile filler could pay you exactly your limit and keep the difference. Set your limit at the worst price you are willing to get, not at a price far from the market "just to make sure it fills". This matters most on a TWAP, where the worst price is usually set well away from the market.
+
+PRIVO's keeper always routes each slice through the best Uniswap pool with a 0.5% slippage bound. The keeper wallet ([`0x30fe…48de`](https://robinhoodchain.blockscout.com/address/0x30feed4ee19955b50c1794e0f8da23804ca548de)) holds only ETH for gas and can never move your tokens outside a fill. If its key were stolen, the thief could fill open orders at each maker's limit (never below it) and keep the gap to the market. To catch that, PRIVO's keeper checks every `Filled` event after each pass and raises an alert on any fill it did not send itself, and on any of its own fills that came in more than 1% under its quote.
+
+### TWAP pacing
+
+The contract only refuses a slice *before* its due time. If slices pile up, for example after a keeper outage, it would accept them all in one block. PRIVO's keeper never catches up in a burst. It keeps the order's interval between its own fills. It shortens that gap only as far as needed to fit the remaining slices before the deadline, and never below 60 seconds.
+
+A v2 contract would enforce both rules on chain: a route limited to swaps on allow-listed pools paying the contract, and a minimum time between fills. The deployed v1 is immutable, so for v1 these rules live in the keeper and the docs.
 
 ## Limits
 
-- Stock tokens against USDG only (18-decimal stock tokens, like the Block desk).
-- At most 100 slices, at least 60 seconds apart; an order lives at most 30 days.
+Enforced by the contract:
+
+- USDG must be one side of the order.
+- At most 100 slices.
 - A slice fills only if the maker still holds and has approved the amount.
+
+Enforced by PRIVO's app, SDK and order API (`newOrder()` and the server), not by the contract:
+
+- Stock tokens only (18-decimal stock tokens, like the Block desk).
+- At least 60 seconds between slices.
+- An order lives at most 30 days.
+- The filler is PRIVO's keeper.
+
+An order signed through another client can step outside these, so use PRIVO's code or check them yourself.
+
+Amounts and prices are per stock token. Some stock tokens stand for more or less than one share: their ERC-8056 `uiMultiplier()` is not 1. Convert a share price with that multiplier before you set a limit.
 
 ## Fee
 
@@ -59,4 +82,10 @@ The keeper wallet ([`0x30fe…48de`](https://robinhoodchain.blockscout.com/addre
 
 `test/orders/deploy-test.mjs` checks that the code on chain is exactly `contracts/out/PrivoOrders.json`.
 
-The first live fill was on 25 Nov 2026: slice 1 of a 6-slice TSLA TWAP, filled exactly at the maker's limit.
+The first live fill was on 25 Nov 2026: slice 1 of a 6-slice TSLA TWAP, filled by PRIVO's keeper.
+
+Orders are dated from the chain head, so the test holds on an RPC whose head lags or leads the wall clock.
+
+## Review
+
+HEY Research Lab reviewed v1.4.0 at PRIVO's request: nothing Medium or higher. They found two Lows. The first was the price-inside-the-limit point above, which these docs had described wrongly. The second was TWAP slices catching up in one block. Both are now handled in the keeper and described here.

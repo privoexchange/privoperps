@@ -7,8 +7,8 @@
 //   await privo.spot.buy("TSLA", "100");                // spend 100 USDG on TSLA
 //   const { key } = await privo.perps.connect();        // once; store key.secret somewhere safe
 //   await privo.perps.order({ sym: "ETH", side: "BUY", qty: 0.01 });
-//   await privo.orders.limit({ sym: "TSLA", side: "buy", amount: "100", price: 370 });  // fills at 370 or better
-import { encodeFunctionData, getAddress, parseAbi, parseUnits, formatUnits } from "viem";
+//   await privo.orders.limit({ sym: "TSLA", side: "buy", amount: "100", price: 370 });  // never pays more than 370 per token
+import { encodeFunctionData, getAddress, isAddress, parseAbi, parseUnits, formatUnits } from "viem";
 import * as Swap from "./privo-swap.js";
 import * as Perps from "./privo-perps.js";
 import * as Desk from "./privo-desk.js";
@@ -139,14 +139,17 @@ export class Privo {
   /* ---------- limit orders and TWAP (PrivoOrders contract, filled by PRIVO's keeper) ---------- */
   // { sym, side: "buy"|"sell", amount (USDG to spend, or shares to sell), price (worst USDG per share), slices?, every? (seconds), days? }
   // Approves the contract, signs the order (no gas) and hands it to PRIVO's keeper. Returns { hash, order, signature }: keep
-  // it to check state or cancel. The keeper can only fill at `price` or better; nothing fills after the deadline.
+  // it to check state or cancel. Every fill pays at least `price`; the keeper fills through the best pool, but the contract
+  // lets the filler fill anywhere between the market and `price`, so set `price` to the worst price you accept. Prices and
+  // amounts are per stock token. Nothing fills after the deadline. The filler is always PRIVO's keeper, pinned in privo-orders.js.
   async _orderPlace({ sym, side, amount, price, slices = 1, every = 900, days = 7 }) {
     const me = this._need();
     const url = this.api.replace(/\/v1\/?$/, "") + "/orders"; // https://privoexchange.com/api/orders
     const info = await getJson(url);
     if (!info.keeper) throw new Error("Limit orders are not live yet");
+    if (!isAddress(info.keeper) || getAddress(info.keeper) !== Orders.KEEPER) throw new Error("The order API named an unexpected keeper; not signing");
     const amountIn = parseUnits(String(amount), side === "buy" ? Swap.USDG.decimals : Swap.STOCK_DECIMALS);
-    const o = Orders.newOrder({ maker: me, filler: info.keeper, sym, side, amountIn, minAmountOut: Orders.minOutForPrice(side, amountIn, price), slices, interval: slices > 1 ? every : 0, hours: days * 24 });
+    const o = Orders.newOrder({ maker: me, filler: Orders.KEEPER, sym, side, amountIn, minAmountOut: Orders.minOutForPrice(side, amountIn, price), slices, interval: slices > 1 ? every : 0, hours: days * 24 });
     if (!(await this.client.getCode({ address: Orders.ORDERS }))) throw new Error("The PrivoOrders contract is not deployed yet");
     const allowance = await this.client.readContract({ address: o.tokenIn, abi: ERC20, functionName: "allowance", args: [me, Orders.ORDERS] });
     if (allowance < (1n << 200n)) await this._send(Orders.approveTx(o.tokenIn, allowance + o.amountIn));

@@ -13,6 +13,10 @@ export const FEE_BIPS = 15n;
 export const MAX_SLICES = 100;
 export const MIN_INTERVAL = 60;            // seconds between TWAP slices
 export const MAX_DAYS = 30;                // an order lives at most this long
+// PRIVO's keeper, pinned here: the app and the SDK sign it as the filler and refuse any other address the API returns.
+// The filler picks the route and the moment of each fill, and with them the price anywhere between the market and the
+// maker's limit. So an order should name only a filler the maker trusts, and its limit should be the worst price they accept.
+export const KEEPER = getAddress("0x30feed4ee19955b50c1794e0f8da23804ca548de");
 export const ORDERS_ABI = parseAbi([
   "function fill((address maker,address filler,address tokenIn,address tokenOut,uint256 amountIn,uint256 minAmountOut,uint32 slices,uint32 interval,uint64 start,uint64 deadline,uint256 nonce) o, bytes signature, bytes commands, bytes[] inputs) returns (uint256)",
   "function cancel(uint256 nonce)",
@@ -46,11 +50,14 @@ export function orderSym(o) {
 
 /** side "buy": spend amountIn USDG (6 decimals, bigint) for at least minAmountOut stock (18 decimals).
  *  side "sell": sell amountIn stock for at least minAmountOut USDG, after the 0.15% fee. */
-export function newOrder({ maker, filler = ZERO, sym, side, amountIn, minAmountOut, slices = 1, interval = 0, start = now(), hours = 24 * 7, nonce = randNonce() }) {
+export function newOrder({ maker, filler = KEEPER, open = false, sym, side, amountIn, minAmountOut, slices = 1, interval = 0, start = now(), hours = 24 * 7, nonce = randNonce() }) {
   const m = orderMarket(sym);
   if (!m) throw new Error("Orders take stock markets only");
   if (!isAddress(maker)) throw new Error("Connect a wallet first");
   if (side !== "buy" && side !== "sell") throw new Error("Pick buy or sell");
+  if (!isAddress(filler)) throw new Error("Bad filler");
+  // filler = address(0) lets anyone fill, at any price down to the limit: only when the caller asks for it explicitly
+  if (getAddress(filler) === ZERO && !open) throw new Error("An order must name its filler (pass open: true for an anyone-can-fill order)");
   slices = Number(slices); interval = Number(interval); start = Number(start);
   if (!Number.isInteger(slices) || slices < 1 || slices > MAX_SLICES) throw new Error("Slices must be between 1 and " + MAX_SLICES);
   if (slices > 1 && (!Number.isInteger(interval) || interval < MIN_INTERVAL)) throw new Error("Time between slices must be at least " + MIN_INTERVAL + " seconds");
@@ -87,6 +94,16 @@ export function slice(o, i) {
   return { amountIn, minOut: (o.minAmountOut * amountIn + o.amountIn - 1n) / o.amountIn };
 }
 export const dueAt = (o, i) => Number(o.start) + i * Number(o.interval);
+// When the keeper may fill the next slice. The contract only refuses a slice before its due time, so after an outage
+// several slices can be overdue at once. The keeper never catches up in a burst: it keeps `interval` between its own
+// fills, shortened only as far as needed to fit the slices left before the deadline (never under MIN_INTERVAL).
+export function nextFillAt(o, filled, lastFillAt = 0, nowSec = now()) {
+  const due = dueAt(o, filled);
+  if (!lastFillAt || o.slices < 2) return due;
+  const left = o.slices - filled, room = Number(o.deadline) - Math.max(nowSec, lastFillAt);
+  const gap = Math.max(MIN_INTERVAL, Math.min(Number(o.interval), Math.floor(room / left)));
+  return Math.max(due, lastFillAt + gap);
+}
 
 export const orderTypedData = (o, contract = ORDERS) => ({ domain: domain(contract), types: ORDER_TYPES, primaryType: "Order", message: o });
 export const orderHash = (o, contract = ORDERS) => hashTypedData(orderTypedData(o, contract));

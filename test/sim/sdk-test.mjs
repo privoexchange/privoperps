@@ -106,7 +106,7 @@ check(JSON.parse(calls.at(-1).init.body).order_type === "LIMIT", "a saved key wo
 // 5. limit orders: approve the Orders contract, sign the order, hand it to PRIVO's keeper (API stubbed, contract code faked)
 const { Orders } = await import("../../src/privo-sdk.js");
 const { verifyTypedData } = await import("viem");
-const KEEPER = "0x00000000000000000000000000000000000Ce0e1";
+let KEEPER = "0x00000000000000000000000000000000000Ce0e1";
 let posted = null;
 globalThis.fetch = async (url, init = {}) => {
   if (!String(url).endsWith("/api/orders")) return realFetch(url, init);
@@ -114,6 +114,9 @@ globalThis.fetch = async (url, init = {}) => {
   return new Response(JSON.stringify({ contract: Orders.ORDERS, keeper: KEEPER }));
 };
 sim.getCode = async () => "0x6080";
+let refused = ""; try { await privo.orders.limit({ sym: "TSLA", side: "buy", amount: "100", price: 300 }); } catch (e) { refused = e.message; }
+check(/unexpected keeper/.test(refused) && posted === null, "the SDK refuses to sign when the order API names any keeper but PRIVO's pinned one");
+KEEPER = Orders.KEEPER;
 const n0o = sent.length;
 const placed = await privo.orders.limit({ sym: "TSLA", side: "buy", amount: "100", price: 300 });
 const po = Orders.fromJson(posted.order);
