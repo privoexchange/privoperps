@@ -54,7 +54,7 @@ async function run(sym, side, human, { slip = 30, inflate = 0 } = {}) {
 }
 
 let bad = 0;
-for (const s of Object.keys(MARKETS)) if ((await run(s, "buy", "250")) !== "ok") bad++;
+for (const s of Object.keys(MARKETS).filter(s => !MARKETS[s].delisted)) if ((await run(s, "buy", "250")) !== "ok") bad++;
 for (const [s, n] of [["NVDA", "1"], ["TSLA", "0.5"], ["AAPL", "0.5"], ["PLTR", "1"], ["ETH", "0.2"], ["BTC", "0.005"]]) if ((await run(s, "sell", n)) !== "ok") bad++;
 // Slippage floor must bite: quote raised 2% above what the pool gives.
 if ((await run("NVDA", "buy", "250", { inflate: 200 })) === "ok") bad++;

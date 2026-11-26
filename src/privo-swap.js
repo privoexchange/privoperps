@@ -115,8 +115,15 @@ export const MARKETS = {
   // Spot only: baskets, limit and TWAP orders take stock tokens only.
   PONS:    { kind: "crypto", meme: true, address: "0x87258272f32aE9ff4FF99E7dbBD5c536157Dd9b0", pools: [{ v: 4, fee: 0, ts: 1, id: "0xe25b02d66719bc8e820ed5a60aefa2c9f0a9fd750d68f1e61c64e3bbdfee2614" }] },
   CASHCAT: { kind: "crypto", meme: true, address: "0xdb52C7032F30f2964D934A464961e02ba1333dC1", pools: [{ v: 4, fee: 0, ts: 1, id: "0x1b632d08142b24439f36f2d182934db3774fbdc65ebd433d0a813e8301028404" }] },
-  AI:      { kind: "crypto", meme: true, address: "0xB442FFA4F7eD5725a7eC83a86Fb59DA380D1FaBb", pools: [{ v: 4, fee: 0, ts: 1, id: "0x15ab5bcf5bcace4477c6d6e25041f80322648d51b125055f8b914b188737df58" }] },
+  // AI delisted 27 Nov 2026: its pool's liquidity was withdrawn (0 liquidity on chain). Kept so balances and past trades
+  // still read; no longer listed or quoted.
+  AI:      { kind: "crypto", meme: true, delisted: true, address: "0xB442FFA4F7eD5725a7eC83a86Fb59DA380D1FaBb", pools: [{ v: 4, fee: 0, ts: 1, id: "0x15ab5bcf5bcace4477c6d6e25041f80322648d51b125055f8b914b188737df58" }] },
   ORBIO:   { kind: "crypto", meme: true, address: "0x7c63Adbe03775153782F65f4FA9De6D97d5b4F25", pools: [{ v: 4, fee: 0, ts: 1, id: "0xf4b7f5341e551ec9bd22a2d3574d3016bce8e6b66d55a278d00faee16a05560d" }] },
+  // Added 26 Nov 2026: $PRIVO itself. Its only pool is the Pons launch pool, Uniswap v4 against native ETH (fee 0, tick spacing
+  // 200, key from the PoolManager's Initialize event) with the Pons hook, which keeps 3% of every swap in either direction
+  // (measured against the pool's own price; the same on Uniswap's app). hop: "ETH" routes USDG -> ETH on the ETH market's best
+  // pool, then ETH -> PRIVO here, in one router call. Spot only.
+  PRIVO:   { kind: "crypto", own: true, note: "$PRIVO trades on its Pons launch pool against ETH. That pool keeps 3% of every swap, on top of the 0.15% PRIVO fee, so buying and selling back costs about 6%.", address: "0xD5eE65798eb4E0528CdF9B6C23b663d8a2276dA0", pools: [{ v: 4, hop: "ETH", fee: 0, ts: 200, hooks: "0xE5e702641Ea86F4ae6cC3cDaeD2B886f976Be044", hookFeeBps: 300, id: "0x6a6e2050d7e0e2da2b58c36044762711c76605f24e67d7e4d93fc4f04d479d7f" }] },
   ETH:  { kind: "crypto", native: true, address: WETH, pools: [
     { v: 3, fee: 100, id: "0x52e65B17fB6E5BA00Ed806f37Afcd2DaA50271Ca" },
     { v: 3, fee: 500, id: "0x69BfaF19C9f377BB306a89aEd9F6B07e2c1a8d9a" },
@@ -150,7 +157,9 @@ function v3Swaps(sym, pool, buy, recipient, minOut) {
     return enc(["address", "uint256", "uint256", "bytes", "bool"], [last ? recipient : ADDRESS_THIS, CONTRACT_BALANCE, last ? minOut : 0n, encodePacked(["address", "uint24", "address"], [t[i], fee, t[i + 1]]), false]);
   });
 }
-export const routeLabel = pool => (pool.via?.length ? "via ETH, " : "") + "pool fee " + (pool.fees || [pool.fee]).map(f => (f / 10000).toFixed(2) + "%").join(" + ");
+export const routeLabel = pool => pool.hop === "ETH"
+  ? "via ETH" + (pool.eth ? " (pool fee " + ((pool.eth.fees || [pool.eth.fee]).map(f => (f / 10000).toFixed(2) + "%").join(" + ")) + ")" : "") + ", Pons pool fee " + ((pool.hookFeeBps || 0) / 100).toFixed(2) + "%"
+  : (pool.via?.length ? "via ETH, " : "") + "pool fee " + (pool.fees || [pool.fee]).map(f => (f / 10000).toFixed(2) + "%").join(" + ");
 
 /* ---------- helpers ---------- */
 const MSG_SENDER = "0x0000000000000000000000000000000000000001";
@@ -175,6 +184,7 @@ export const portion = (amount, bips) => amount * bips / 10000n;
 export const applySlippage = (amount, slipBps) => amount * (10000n - BigInt(slipBps)) / 10000n;
 
 function poolKey(stock, pool) {
+  if (pool.hop === "ETH") return { currency0: ZERO, currency1: stock, fee: pool.fee, tickSpacing: pool.ts, hooks: pool.hooks || ZERO }; // native ETH sorts first
   const [c0, c1] = BigInt(USDG.address) < BigInt(stock) ? [USDG.address, stock] : [stock, USDG.address];
   return { currency0: c0, currency1: c1, fee: pool.fee, tickSpacing: pool.ts, hooks: ZERO };
 }
@@ -200,11 +210,25 @@ async function quotePool(client, stock, pool, tokenIn, tokenOut, amountIn, sym, 
 }
 
 // Quotes every known pool of a market for swapIn and returns the one that pays most: { best: { pool, out }, all }.
+// A pool reached through ETH (hop: "ETH"): USDG <-> ETH on the ETH market's best pool, then ETH <-> the token on this v4 pool.
+// Returns { pool: { ...pool, eth: the ETH pool used, ethAmount }, out }.
+async function quoteViaEth(client, sym, pool, buy, amountIn) {
+  const m = MARKETS[sym];
+  if (buy) {
+    const e = await bestPool(client, "ETH", true, amountIn);
+    const out = await quotePool(client, m.address, pool, ZERO, m.address, e.best.out, sym, true);
+    return { pool: { ...pool, eth: e.best.pool, ethAmount: e.best.out }, out };
+  }
+  const ethOut = await quotePool(client, m.address, pool, m.address, ZERO, amountIn, sym, false);
+  const e = await bestPool(client, "ETH", false, ethOut);
+  return { pool: { ...pool, eth: e.best.pool, ethAmount: ethOut }, out: e.best.out };
+}
 async function bestPool(client, sym, buy, swapIn) {
   const m = MARKETS[sym];
   const [tokenIn, tokenOut] = buy ? [USDG.address, m.address] : [m.address, USDG.address];
-  const tries = await Promise.allSettled(m.pools.map(p => quotePool(client, m.address, p, tokenIn, tokenOut, swapIn, sym, buy)));
-  const all = tries.map((t, i) => ({ pool: m.pools[i], out: t.status === "fulfilled" ? t.value : null, error: t.status === "rejected" ? (t.reason?.shortMessage || t.reason?.message) : null }));
+  const tries = await Promise.allSettled(m.pools.map(p => p.hop === "ETH" ? quoteViaEth(client, sym, p, buy, swapIn)
+    : quotePool(client, m.address, p, tokenIn, tokenOut, swapIn, sym, buy).then(out => ({ pool: p, out }))));
+  const all = tries.map((t, i) => ({ pool: t.status === "fulfilled" ? t.value.pool : m.pools[i], out: t.status === "fulfilled" ? t.value.out : null, error: t.status === "rejected" ? (t.reason?.shortMessage || t.reason?.message) : null }));
   const ok = all.filter(q => q.out && q.out > 0n).sort((a, b) => (b.out > a.out ? 1 : b.out < a.out ? -1 : 0));
   if (!ok.length) throw new Error("No pool can fill this size right now (" + sym + ")");
   return { best: ok[0], all };
@@ -215,6 +239,7 @@ async function bestPool(client, sym, buy, swapIn) {
 export async function quote(client, { sym, side, amount }) {
   const m = MARKETS[sym];
   if (!m) throw new Error("No live market for " + sym);
+  if (m.delisted) throw new Error(sym + " is no longer listed on PRIVO: its pool has no liquidity");
   if (amount <= 0n) throw new Error("Enter an amount");
   const bips = feeBips();
   const fee = side === "buy" ? portion(amount, bips) : 0n;
@@ -453,9 +478,11 @@ export async function midPrice(client, sym, poolId) {
   const m = MARKETS[sym]; if (!m) return null;
   const pool = m.pools.find(p => p.id.toLowerCase() === String(poolId || "").toLowerCase()) || m.pools[0];
   const usdIn = 10n ** BigInt(USDG.decimals) * 5n; // 5 USDG
-  const got = await quotePool(client, m.address, pool, USDG.address, m.address, usdIn, sym, true);
+  const leg = (buy, amt) => pool.hop === "ETH" ? quoteViaEth(client, sym, pool, buy, amt).then(r => r.out)
+    : quotePool(client, m.address, pool, buy ? USDG.address : m.address, buy ? m.address : USDG.address, amt, sym, buy);
+  const got = await leg(true, usdIn);
   if (!got || got <= 0n) return null;
-  const back = await quotePool(client, m.address, pool, m.address, USDG.address, got, sym, false);
+  const back = await leg(false, got);
   const d = 10 ** decimalsOf(sym), tok = Number(got) / d, buyPx = 5 / tok, sellPx = Number(back) / 10 ** USDG.decimals / tok;
   const mid = Math.sqrt(buyPx * sellPx);
   return mid > 0 && isFinite(mid) ? mid : null;
@@ -538,6 +565,27 @@ export function buildSwap(q, { slippageBps = 50, permit = null, deadlineSec = 12
     cmds.push(CMD.PERMIT2_TRANSFER_FROM); inputs.push(enc(["address", "address", "uint160"], [tokenIn, ADDRESS_THIS, q.amount]));
   }
   const feeOn = q.bips > 0n && CONFIG.FEE_WALLET;
+  if (pool.hop === "ETH") {
+    // Through ETH: the ETH leg runs on a v3 USDG/WETH pool and the WETH is unwrapped (or wrapped) inside the router; the
+    // token leg runs on the v4 pool against native ETH. Only the last leg carries the trader's minimum.
+    if (pool.eth?.v !== 3 || native) throw new Error("Unsupported route for " + q.sym);
+    if (buy) {
+      if (feeOn) { cmds.push(CMD.PAY_PORTION); inputs.push(enc(["address", "address", "uint256"], [USDG.address, CONFIG.FEE_WALLET, q.bips])); }
+      const minOut = applySlippage(q.grossOut, slippageBps);
+      for (const inp of v3Swaps("ETH", pool.eth, true, ADDRESS_THIS, 0n)) { cmds.push(CMD.V3_SWAP_EXACT_IN); inputs.push(inp); }
+      cmds.push(CMD.UNWRAP_WETH); inputs.push(enc(["address", "uint256"], [ADDRESS_THIS, 0n]));
+      cmds.push(CMD.V4_SWAP); inputs.push(v4Swap(stock, pool, true, minOut, ZERO, stock, false));
+      return finish(cmds, inputs, deadlineSec, minOut, value);
+    }
+    const minGross = applySlippage(q.grossOut, slippageBps);
+    cmds.push(CMD.V4_SWAP); inputs.push(v4Swap(stock, pool, false, 0n, stock, ZERO, true));
+    cmds.push(CMD.WRAP_ETH); inputs.push(enc(["address", "uint256"], [ADDRESS_THIS, CONTRACT_BALANCE]));
+    for (const inp of v3Swaps("ETH", pool.eth, false, ADDRESS_THIS, minGross)) { cmds.push(CMD.V3_SWAP_EXACT_IN); inputs.push(inp); }
+    if (feeOn) { cmds.push(CMD.PAY_PORTION); inputs.push(enc(["address", "address", "uint256"], [USDG.address, CONFIG.FEE_WALLET, q.bips])); }
+    const minNet = minGross - portion(minGross, feeOn ? q.bips : 0n);
+    cmds.push(CMD.SWEEP); inputs.push(enc(["address", "address", "uint160"], [USDG.address, MSG_SENDER, minNet]));
+    return finish(cmds, inputs, deadlineSec, minNet, value);
+  }
   if (buy) {
     if (feeOn) { cmds.push(CMD.PAY_PORTION); inputs.push(enc(["address", "address", "uint256"], [USDG.address, CONFIG.FEE_WALLET, q.bips])); }
     const minOut = applySlippage(q.grossOut, slippageBps);

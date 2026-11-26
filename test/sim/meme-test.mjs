@@ -42,7 +42,7 @@ const sim = calls => c.request({ method: "eth_simulateV1", params: [{ blockState
 const flows = logs => logs.filter(l => l.topics[0] === TRANSFER).map(l => ({ tok: l.address.toLowerCase(), from: "0x" + l.topics[1].slice(26), to: "0x" + l.topics[2].slice(26), v: BigInt(l.data) }));
 const me = acct.address.toLowerCase(), router = ADDR.ROUTER.toLowerCase(), usdg = USDG.address.toLowerCase(), fw = CONFIG.FEE_WALLET.toLowerCase();
 
-for (const sym of ["PONS", "CASHCAT", "AI", "ORBIO"]) {
+for (const sym of ["PONS", "CASHCAT", "ORBIO"]) { // AI delisted 27 Nov 2026 (pool liquidity withdrawn)
   const m = MARKETS[sym], tok = m.address.toLowerCase();
   const qb = await quote(c, { sym, side: "buy", amount });
   const p1 = permitTypedData({ token: USDG.address, amount, nonce: 0 });
@@ -65,7 +65,7 @@ for (const sym of ["PONS", "CASHCAT", "AI", "ORBIO"]) {
   check(back >= sell.minOut && feeSell === portion(back + feeSell, qs.bips) && Object.values(left).every(v => v === 0n) && fs2.some(t => t.tok === tok && t.from === me && t.v === got),
     `${sym} sell: all ${formatUnits(got, 18)} back -> ${formatUnits(back, 6)} USDG (floor ${formatUnits(sell.minOut, 6)}); fee ${formatUnits(feeSell, 6)} USDG; router keeps nothing`);
 }
-check(["PONS", "CASHCAT", "AI", "ORBIO"].every(s => !orderMarket(s)), "memecoins are not taken by limit or TWAP orders");
+check(["PONS", "CASHCAT", "ORBIO", "AI"].every(s => !orderMarket(s)), "memecoins are not taken by limit or TWAP orders");
 let refused = false; try { splitBasket([{ sym: "PONS", w: 5000 }, { sym: "TSLA", w: 5000 }], 10n ** 8n); } catch { refused = true; }
 check(refused, "memecoins are not taken in baskets");
 

@@ -56,7 +56,7 @@ async function getJson(url) {
 // GeckoTerminal returns up to 30 pools per request, so the pools go in batches. For each market the deepest pool wins.
 // Returns { SYM: { px, chg, vol, depth, pool } } with USD figures (USDG is treated as $1).
 export async function poolStats() {
-  const ids = Object.values(MARKETS).flatMap(m => m.pools.map(p => p.id)), batches = [];
+  const ids = Object.values(MARKETS).filter(m => !m.delisted).flatMap(m => m.pools.map(p => p.id)), batches = [];
   for (let i = 0; i < ids.length; i += 25) batches.push(ids.slice(i, i + 25));
   const parts = await Promise.all(batches.map(b => getJson(GECKO + "/pools/multi/" + b.join(","))));
   const j = { data: parts.flatMap(p => p.data || []) };

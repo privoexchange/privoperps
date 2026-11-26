@@ -5,6 +5,7 @@ Open-source core of [PRIVO](https://privoexchange.com), a trading layer for stoc
 - **Spot** trades route to Uniswap pools, with a small PRIVO fee taken on chain.
 - **Perps** run on [Orderly Network](https://orderly.network) through PRIVO's builder account (`privo`), margined in USDG.
 - **Baskets** on spot: one USDG amount spread over 2 to 8 stock tokens in a single Universal Router call under one Permit2 signature, each bought on its best pool with its own slippage floor; all or nothing, with the PRIVO fee taken once. A basket sells the same way: 2 to 8 stock tokens to USDG in one call under one Permit2 PermitBatch signature, each leg with its own floor, all or nothing (`quoteBasketSell`, `buildBasketSell`). A basket rebalances the same way: what is above its target share sells, the fee is taken once on the proceeds, and what is below target is bought with the worst-case proceeds, in one call under one PermitBatch signature (`quoteRebalance`, `buildRebalance`).
+- **$PRIVO** on spot: its only pool is the Pons launch pool (Uniswap v4 against native ETH, with a hook that keeps 3% of every swap), so pools marked hop: "ETH" route USDG -> ETH -> PRIVO and back in one Universal Router call with the PRIVO fee.
 - **Limit orders and TWAP** on spot: the trader signs an order off chain, and PRIVO's keeper fills it through the PrivoOrders contract, never below the trader's limit, in one go or in slices over time.
 - **The Block desk** is a sealed-quote OTC contract: takers sign quotes off chain, the maker settles the best one in a single transaction, and losing quotes stay off chain unless the maker fills them (the app and SDK settle at most once per request and ask losing takers to withdraw).
 
@@ -146,6 +147,7 @@ node test/orders/orders-test.mjs       # PrivoOrders on mainnet state: limit buy
 node test/orders/deploy-test.mjs       # PrivoOrders bytecode on chain matches this build
 node test/sim/rebalance-test.mjs       # basket rebalances on mainnet state: lopsided baskets back to target, fee once, router keeps nothing, journal and positions
 node test/mcp/mcp-test.mjs             # MCP server over stdio: read tools, limits and refusals, and privo_buy / privo_basket_buy transactions simulated on mainnet state
+node test/sim/privo-token-test.mjs     # $PRIVO round trips through ETH on mainnet state: fee, floors, router keeps nothing, Pons 3%
 node test/sim/livetest.mjs             # spot swaps with the PRIVO fee for every market
 node test/sim/perpstest.mjs            # Orderly account IDs, vault deposits, key and request signing
 node test/sim/perps-pro-test.mjs       # stop, TP/SL, bracket, post-only/IOC and websocket auth (Orderly stubbed)
