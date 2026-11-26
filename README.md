@@ -38,7 +38,13 @@ Any agent that speaks the [Model Context Protocol](https://modelcontextprotocol.
 ```bash
 # Claude Code (Node 22+)
 claude mcp add privo -e PRIVO_PRIVATE_KEY=0x... -e PRIVO_MAX_USDG=50 -- npx -y -p github:privoexchange/privoperps privo-mcp
+
+# faster start: install once, then the command is just privo-mcp (run the install again to update)
+npm install -g github:privoexchange/privoperps
+claude mcp add privo -e PRIVO_PRIVATE_KEY=0x... -e PRIVO_MAX_USDG=50 -- privo-mcp
 ```
+
+Through `npx`, the first run downloads the package from GitHub, which can take a while; if the client gives up before the server is ready, start it again or install it globally.
 
 Other clients (Claude Desktop, Cursor and so on) take the same command in their `mcpServers` config:
 
