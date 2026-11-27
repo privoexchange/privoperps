@@ -9,6 +9,7 @@
 //   PRIVO_MAX_USDG         largest trade the agent may make, in USDG (default 100). Buys count what is spent, sells what the
 //                          quote says comes back, perps deposits their amount.
 //   PRIVO_MAX_PERPS_USDG   largest perps order notional at the mark price, in USDG (default 5x PRIVO_MAX_USDG)
+//   PRIVO_MAX_AI_USDG      most one PRIVO AI Pro message may cost, in USDG (default 0.05); paid over x402 from this wallet
 //   PRIVO_SLIPPAGE_BPS     spot and basket slippage limit, 1..500 (default 50 = 0.5%)
 //   PRIVO_READ_ONLY        1 to offer only the read tools even with a key
 //   PRIVO_RPC              comma-separated Robinhood Chain RPC URLs (default: PRIVO's list)
@@ -23,11 +24,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { Privo, Swap, Perps } from "../src/privo-sdk.js";
 
-export const VERSION = "1.0.0";
+export const VERSION = "1.1.0";
 const E = process.env;
 const num = (v, d) => (v != null && v !== "" && Number.isFinite(+v) ? +v : d);
 export const LIMITS = { maxUsdg: num(E.PRIVO_MAX_USDG, 100) };
 LIMITS.maxPerps = num(E.PRIVO_MAX_PERPS_USDG, LIMITS.maxUsdg * 5);
+LIMITS.maxAi = num(E.PRIVO_MAX_AI_USDG, 0.05);
 const SLIP = num(E.PRIVO_SLIPPAGE_BPS, 50);
 if (!(SLIP >= 1 && SLIP <= 500)) throw new Error("PRIVO_SLIPPAGE_BPS is 1..500");
 const RPCS = E.PRIVO_RPC ? E.PRIVO_RPC.split(",").map(s => s.trim()).filter(Boolean) : Swap.CHAIN.rpcUrls.default.http;
@@ -134,6 +136,16 @@ export function buildServer(privo = makePrivo(), { readOnly = E.PRIVO_READ_ONLY 
 
   /* ----- trading ----- */
   if (trading) {
+    server.registerTool("privo_ai", { title: "Ask PRIVO AI Pro", annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+      description: `Ask PRIVO AI Pro anything about markets, a stock, crypto or a trade plan. Each message is paid from this wallet in USDG over x402 ` +
+        `(one signed authorization, no gas), at the model's price: haiku $0.002 up to fable $0.15; this server pays at most ${LIMITS.maxAi} USDG per message. ` +
+        "The answer may include tickets (intents); they are suggestions and nothing is traded unless you call a trading tool. Answers are not financial advice.",
+      inputSchema: { question: z.string().min(1).max(2000), model: z.string().optional().describe("Model key: haiku (default), deepseek, glm, gemini-flash, gpt-terra, grok, sonnet, gemini-argon, gpt-sol, opus, fable") } },
+    wrap(async ({ question, model }) => {
+      const r = await privo.ai.ask(question, { model: model || "haiku", maxUsdg: LIMITS.maxAi });
+      return { answer: r.say, tickets: r.intents, model: r.label || r.model, paidUsdg: r.paidUsdg, ...(r.tx ? tx(r.tx) : {}) };
+    }));
+
     server.registerTool("privo_buy", { title: "Buy on spot", annotations: RW,
       description: "Spend USDG on a spot market through Uniswap from this agent's wallet (real, on chain). Approves Permit2 once per token if needed. Quote first with privo_quote.",
       inputSchema: { symbol: sym, usdg: dec.describe("USDG to spend") } },

@@ -32,6 +32,7 @@ This repository holds the smart contract, the wallet-free client libraries the a
 | [`src/privo-voice-core.js`](src/privo-voice-core.js) | Voice: cleans what a speech recognizer heard (spoken numbers and prices, misheard buy/sell, spelled tickers, company names) into the text the parser reads, and the short reply read back. |
 | [`src/privo-aipro-core.js`](src/privo-aipro-core.js) | PRIVO AI chat core: the answer-anything prompt with a live market snapshot, conversation history, reply parsing (up to 4 checked tickets), the 11 Pro models with their prices, and per-message payment math (USDG, or $PRIVO at 1.25x its pool sale value). |
 | [`src/privo-gift-core.js`](src/privo-gift-core.js) | Gift links: the `g1.` link format (key after "#"), funding transactions (gas first), the gas budget, and the sweep that sends every token and then the leftover ETH to the claimer. |
+| [`src/privo-x402.js`](src/privo-x402.js) | x402 payments on Robinhood Chain: the 402 terms, the EIP-3009 USDG authorization (domain "Global Dollar", version 1), the `X-PAYMENT` header, and `payFetch`, which pays one 402 within a price cap. Used by `privo.ai.ask()` and the MCP tool `privo_ai`. |
 | [`mcp/privo-mcp.mjs`](mcp/privo-mcp.mjs) | MCP server (`privo-mcp`) so any MCP-capable AI agent can read PRIVO markets and trade with its own wallet, with a per-trade USDG limit. |
 | [`examples/`](examples) | Example bots, starting with a dip buyer. |
 | [`test/`](test) | Tests that run against mainnet state with `eth_call` and state overrides. They send no transactions. |
@@ -71,12 +72,14 @@ Other clients (Claude Desktop, Cursor and so on) take the same command in their 
 | `privo_quote_rebalance`, `privo_basket_rebalance` | Back to target shares in one transaction: sell what is above target, buy what is below |
 | `privo_limit_order`, `privo_twap_order`, `privo_orders`, `privo_cancel_order` | Limit and TWAP through PrivoOrders, filled by PRIVO's keeper, never worse than the price |
 | `privo_perps_connect`, `privo_perps_deposit`, `privo_perps_order`, `privo_perps_account`, `privo_perps_cancel` | Orderly perps; the 30-day trading key is saved on the agent's machine and cannot withdraw |
+| `privo_ai` | Ask PRIVO AI Pro; each message is paid from the agent's wallet over x402 (one USDG signature, no gas). Suggested tickets are never sent for you |
 
 | Setting | Default | |
 |---|---|---|
 | `PRIVO_PRIVATE_KEY` | none (read-only) | The agent's own wallet key |
 | `PRIVO_MAX_USDG` | 100 | Largest trade, in USDG: what a buy spends, what a sale is quoted to bring back, a perps deposit. Larger trades are refused before anything is signed |
 | `PRIVO_MAX_PERPS_USDG` | 5 x `PRIVO_MAX_USDG` | Largest perps order notional at the mark price |
+| `PRIVO_MAX_AI_USDG` | 0.05 | Most one PRIVO AI Pro message may cost, in USDG (models cost $0.002 to $0.15) |
 | `PRIVO_SLIPPAGE_BPS` | 50 | Spot and basket slippage limit, 1 to 500 |
 | `PRIVO_READ_ONLY` | off | `1` offers only the read tools, even with a key |
 | `PRIVO_RPC` | PRIVO's list | Comma-separated Robinhood Chain RPC URLs |
@@ -154,6 +157,7 @@ node test/blockdesk/deploy-test.mjs    # deployed bytecode matches this build
 node test/orders/orders-test.mjs       # PrivoOrders on mainnet state: limit buy/sell, v3 and v4 pools, TWAP slices and timing, every refusal
 node test/orders/deploy-test.mjs       # PrivoOrders bytecode on chain matches this build
 node test/sim/rebalance-test.mjs       # basket rebalances on mainnet state: lopsided baskets back to target, fee once, router keeps nothing, journal and positions
+node test/ai/x402-test.mjs             # x402: payment format, privo.ai.ask within its cap, and a live eth_call that USDG accepts the signature
 node test/mcp/mcp-test.mjs             # MCP server over stdio: read tools, limits and refusals, and privo_buy / privo_basket_buy transactions simulated on mainnet state
 node test/sim/privo-token-test.mjs     # $PRIVO round trips through ETH on mainnet state: fee, floors, router keeps nothing, Pons 3%
 node test/sim/livetest.mjs             # spot swaps with the PRIVO fee for every market

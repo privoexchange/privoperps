@@ -29,7 +29,7 @@ async function stdio(env) {
   return c;
 }
 const READ = ["privo_arena", "privo_markets", "privo_prices", "privo_quote", "privo_quote_basket", "privo_wallet"];
-const TRADE = ["privo_basket_buy", "privo_basket_rebalance", "privo_basket_sell", "privo_buy", "privo_cancel_order", "privo_limit_order", "privo_orders", "privo_perps_account", "privo_perps_cancel",
+const TRADE = ["privo_ai", "privo_basket_buy", "privo_basket_rebalance", "privo_basket_sell", "privo_buy", "privo_cancel_order", "privo_limit_order", "privo_orders", "privo_perps_account", "privo_perps_cancel",
   "privo_perps_connect", "privo_perps_deposit", "privo_perps_order", "privo_quote_rebalance", "privo_sell", "privo_twap_order"];
 
 /* ---------- 1. read-only over stdio ---------- */

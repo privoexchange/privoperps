@@ -1,6 +1,6 @@
 {
   "name": "privoperps",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "description": "PRIVO SDK and core on Robinhood Chain: spot swaps through Uniswap with the PRIVO fee, limit orders and TWAP, Orderly perps, sealed OTC block trades, and the Block desk and Orders contracts. PRIVO AI cores (Copilot ticket parser, voice, Pro models and per-message payments) and gift links. An MCP server (privo-mcp) for AI agents. Every trade is signed by your own wallet.",
   "type": "module",
   "license": "MIT",
@@ -37,7 +37,7 @@
     "compile": "node test/blockdesk/compile.mjs",
     "test:orders": "node test/orders/orders-test.mjs && node test/orders/deploy-test.mjs",
     "test:mcp": "node test/mcp/mcp-test.mjs",
-    "test:ai": "node test/ai/copilot-test.mjs && node test/ai/voice-test.mjs && node test/ai/aipro-core-test.mjs"
+    "test:ai": "node test/ai/copilot-test.mjs && node test/ai/voice-test.mjs && node test/ai/aipro-core-test.mjs && node test/ai/x402-test.mjs --offline"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
@@ -60,7 +60,8 @@
     "./copilot": "./src/privo-copilot-core.js",
     "./voice": "./src/privo-voice-core.js",
     "./ai": "./src/privo-aipro-core.js",
-    "./gift": "./src/privo-gift-core.js"
+    "./gift": "./src/privo-gift-core.js",
+    "./x402": "./src/privo-x402.js"
   },
   "files": [
     "src",

@@ -11,13 +11,15 @@
 //   await privo.baskets.buy({ legs: ["AAPL", "MSFT", "NVDA"], amount: "90" });         // 30 USDG each, one transaction
 //   await privo.baskets.sell({ legs: ["AAPL", "MSFT", "NVDA"], pct: 50 });              // half of each, to USDG
 //   await privo.baskets.rebalance({ legs: ["AAPL", "MSFT", "NVDA"] });                  // back to a third each, one transaction
+//   await privo.ai.ask("Should I trim TSLA after earnings?", { model: "sonnet", maxUsdg: 0.05 });  // PRIVO AI Pro, paid per message over x402
 import { encodeFunctionData, getAddress, isAddress, parseAbi, parseUnits, formatUnits } from "viem";
 import * as Swap from "./privo-swap.js";
 import * as Perps from "./privo-perps.js";
 import * as Desk from "./privo-desk.js";
 import * as Orders from "./privo-orders.js";
+import * as X402 from "./privo-x402.js";
 
-export { Swap, Perps, Desk, Orders };
+export { Swap, Perps, Desk, Orders, X402 };
 export const API = "https://privoexchange.com/api/v1";
 const ERC20 = parseAbi(["function allowance(address,address) view returns (uint256)", "function approve(address,uint256) returns (bool)", "function balanceOf(address) view returns (uint256)"]);
 
@@ -59,7 +61,22 @@ export class Privo {
     this.baskets = { quote: o => this._basketQuote(o), buy: o => this._basketBuy(o), quoteSell: o => this._basketSellQuote(o), sell: o => this._basketSell(o),
       quoteRebalance: o => this._rebalanceQuote(o), rebalance: o => this._rebalance(o),
       link: (legs, name) => Swap.basketLink(this._legs(legs), { name }), parse: link => Swap.parseBasketLink(link) };
+    // PRIVO AI Pro over x402: each message is paid with one signed USDG authorization (no gas, no account). The answer
+    // may carry tickets (intents); they are suggestions only and nothing is traded until the bot sends them itself.
+    this.ai = { models: () => getJson(this.api.replace(/\/v1\/?$/, "") + "/ai-pro/chat"), ask: (q, o) => this._aiAsk(q, o) };
     this.block = { request: o => this._blockRequest(o), answer: (link, price, o) => this._blockAnswer(link, price, o), check: (req, codes) => this._blockCheck(req, codes), settle: (req, quote) => this._blockSettle(req, quote) };
+  }
+
+  // ask(question | messages, { model = "haiku", maxUsdg = 0.05, history = [] }) -> { say, intents, model, paid, tx }
+  // messages: [{ role: "user" | "ai", text | say }]. maxUsdg caps what one message may cost; above it nothing is signed.
+  async _aiAsk(q, { model = "haiku", maxUsdg = 0.05, history = [], snapshot } = {}) {
+    const from = this._need();
+    const messages = Array.isArray(q) ? q : [...history, { role: "user", text: String(q) }];
+    const url = this.api.replace(/\/v1\/?$/, "") + "/ai-pro/x402";
+    const { res, body, paid } = await X402.payFetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model, messages, snapshot }) },
+      { from, maxPrice: Math.round(Number(maxUsdg) * 1e6), signTypedData: td => this.wallet.signTypedData({ account: this.wallet.account, ...td }) });
+    if (!res.ok) throw new Error(body?.error || "PRIVO AI Pro answered HTTP " + res.status);
+    return { say: body.say, intents: body.intents || [], dropped: body.dropped || [], model: body.model, label: body.label, paidUsdg: (paid?.price ?? body.paid) / 1e6, tx: paid?.transaction || body.tx };
   }
 
   get address() { return this.wallet?.account ? getAddress(this.wallet.account.address) : null; }
