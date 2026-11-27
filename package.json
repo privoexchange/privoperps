@@ -1,7 +1,7 @@
 {
   "name": "privoperps",
-  "version": "1.7.0",
-  "description": "PRIVO SDK and core on Robinhood Chain: spot swaps through Uniswap with the PRIVO fee, limit orders and TWAP, Orderly perps, sealed OTC block trades, and the Block desk and Orders contracts. An MCP server (privo-mcp) for AI agents. Every trade is signed by your own wallet.",
+  "version": "1.8.0",
+  "description": "PRIVO SDK and core on Robinhood Chain: spot swaps through Uniswap with the PRIVO fee, limit orders and TWAP, Orderly perps, sealed OTC block trades, and the Block desk and Orders contracts. PRIVO AI cores (Copilot ticket parser, voice, Pro models and per-message payments) and gift links. An MCP server (privo-mcp) for AI agents. Every trade is signed by your own wallet.",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -22,7 +22,10 @@
     "limit-orders",
     "twap",
     "mcp",
-    "model-context-protocol"
+    "model-context-protocol",
+    "voice",
+    "ai-trading",
+    "gift-links"
   ],
   "engines": {
     "node": ">=22"
@@ -33,7 +36,8 @@
     "test:chain": "node test/sim/perps-trade-test.mjs && node test/sim/sdk-test.mjs && node test/sim/livetest.mjs && node test/sim/perpstest.mjs",
     "compile": "node test/blockdesk/compile.mjs",
     "test:orders": "node test/orders/orders-test.mjs && node test/orders/deploy-test.mjs",
-    "test:mcp": "node test/mcp/mcp-test.mjs"
+    "test:mcp": "node test/mcp/mcp-test.mjs",
+    "test:ai": "node test/ai/copilot-test.mjs && node test/ai/voice-test.mjs && node test/ai/aipro-core-test.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
@@ -52,7 +56,11 @@
     "./desk": "./src/privo-desk.js",
     "./feed": "./src/privo-feed.js",
     "./journal": "./src/privo-journal.js",
-    "./orders": "./src/privo-orders.js"
+    "./orders": "./src/privo-orders.js",
+    "./copilot": "./src/privo-copilot-core.js",
+    "./voice": "./src/privo-voice-core.js",
+    "./ai": "./src/privo-aipro-core.js",
+    "./gift": "./src/privo-gift-core.js"
   },
   "files": [
     "src",

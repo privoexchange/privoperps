@@ -7,6 +7,8 @@ Open-source core of [PRIVO](https://privoexchange.com), a trading layer for stoc
 - **Baskets** on spot: one USDG amount spread over 2 to 8 stock tokens in a single Universal Router call under one Permit2 signature, each bought on its best pool with its own slippage floor; all or nothing, with the PRIVO fee taken once. A basket sells the same way: 2 to 8 stock tokens to USDG in one call under one Permit2 PermitBatch signature, each leg with its own floor, all or nothing (`quoteBasketSell`, `buildBasketSell`). A basket rebalances the same way: what is above its target share sells, the fee is taken once on the proceeds, and what is below target is bought with the worst-case proceeds, in one call under one PermitBatch signature (`quoteRebalance`, `buildRebalance`).
 - **$PRIVO** on spot: its only pool is the Pons launch pool (Uniswap v4 against native ETH, with a hook that keeps 3% of every swap), so pools marked hop: "ETH" route USDG -> ETH -> PRIVO and back in one Universal Router call with the PRIVO fee.
 - **Limit orders and TWAP** on spot: the trader signs an order off chain, and PRIVO's keeper fills it through the PrivoOrders contract, never below the trader's limit, in one go or in slices over time.
+- **PRIVO AI** reads a request typed or spoken in plain English ("buy 20 dollars of Tesla", "sell half my NVDA") and turns it into order tickets the trader reviews and signs. The parser runs in the browser; anything else goes to an AI model, and every ticket the model proposes is checked against PRIVO's markets before it is used. Pro chats on one of 11 models and is paid per message from the trader's wallet, in USDG or in $PRIVO at 20% off.
+- **Gift links** send stock tokens, crypto or USDG as a link: a one-time gift wallet holds the gift and a little gas, its key lives only after the "#" of the link, and the claimer receives everything without signing or paying gas.
 - **The Block desk** is a sealed-quote OTC contract: takers sign quotes off chain, the maker settles the best one in a single transaction, and losing quotes stay off chain unless the maker fills them (the app and SDK settle at most once per request and ask losing takers to withdraw).
 
 This repository holds the smart contract, the wallet-free client libraries the app uses, and the tests that check them against Robinhood Chain mainnet state. It does not contain the website, servers or any keys.
@@ -26,6 +28,10 @@ This repository holds the smart contract, the wallet-free client libraries the a
 | [`src/privo-journal.js`](src/privo-journal.js) | Spot trade journal: trades from receipts or the Blockscout API, average-cost book and realized PnL per sale. |
 | [`src/privo-feed.js`](src/privo-feed.js) | Read-only market data: pool prices and candles (GeckoTerminal), Orderly perp stats, candles and max leverage per market. |
 | [`src/privo-sdk.js`](src/privo-sdk.js) | SDK for bots and AI agents: the `Privo` class over the modules above (spot buy/sell, baskets buy/sell/rebalance/share links, limit and TWAP orders, perps connect/deposit/order, block request/answer/check/settle, read API). |
+| [`src/privo-copilot-core.js`](src/privo-copilot-core.js) | PRIVO AI ticket parser and checker: plain English to spot, limit, TWAP, basket and rebalance intents, and the validator every AI-proposed ticket must pass. |
+| [`src/privo-voice-core.js`](src/privo-voice-core.js) | Voice: cleans what a speech recognizer heard (spoken numbers and prices, misheard buy/sell, spelled tickers, company names) into the text the parser reads, and the short reply read back. |
+| [`src/privo-aipro-core.js`](src/privo-aipro-core.js) | PRIVO AI chat core: the answer-anything prompt with a live market snapshot, conversation history, reply parsing (up to 4 checked tickets), the 11 Pro models with their prices, and per-message payment math (USDG, or $PRIVO at 1.25x its pool sale value). |
+| [`src/privo-gift-core.js`](src/privo-gift-core.js) | Gift links: the `g1.` link format (key after "#"), funding transactions (gas first), the gas budget, and the sweep that sends every token and then the leftover ETH to the claimer. |
 | [`mcp/privo-mcp.mjs`](mcp/privo-mcp.mjs) | MCP server (`privo-mcp`) so any MCP-capable AI agent can read PRIVO markets and trade with its own wallet, with a per-trade USDG limit. |
 | [`examples/`](examples) | Example bots, starting with a dip buyer. |
 | [`test/`](test) | Tests that run against mainnet state with `eth_call` and state overrides. They send no transactions. |
@@ -140,6 +146,8 @@ Node 22 or newer (WebCrypto Ed25519).
 npm install
 npm test                      # offline only: journal, perps order messages and trading-key handling (Orderly stubbed)
 npm run test:chain            # reads live data: perps sizing (Orderly public API), the SDK, spot swaps and Orderly accounts
+npm run test:ai                       # offline: PRIVO AI parser and checker, voice clean-up, chat core and payment math
+node test/sim/gift-test.mjs            # gift links: format, funding, sweep, and a claim simulated on mainnet state with fees validated
 node test/blockdesk/desk-test.mjs      # contract on mainnet state: settle, fees, signatures, nonces
 node test/blockdesk/ui-core-test.mjs   # client library against the deployed contract
 node test/blockdesk/deploy-test.mjs    # deployed bytecode matches this build
