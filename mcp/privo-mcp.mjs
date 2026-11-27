@@ -90,10 +90,10 @@ export function buildServer(privo = makePrivo(), { readOnly = E.PRIVO_READ_ONLY 
 
   /* ----- reads ----- */
   server.registerTool("privo_markets", { title: "List PRIVO markets", annotations: RO,
-    description: "Every PRIVO spot market (stock tokens, ETH, BTC, memecoins) with its token address, kind and perps symbol, plus PRIVO's fees and contract addresses." },
+    description: "Every PRIVO spot market (stock tokens, ETH, BTC, and tokens of Robinhood Chain projects such as PONS, HEY, TEXEL, HEPH and ORBIO) with its token address, kind and perps symbol, plus PRIVO's fees and contract addresses." },
   wrap(async () => {
     const m = await privo.markets();
-    return { quote: m.quote, fees: m.fees, contracts: m.contracts, markets: m.markets.map(x => ({ sym: x.sym, kind: x.kind, meme: x.meme || undefined, token: x.token, perp: x.perp || null })) };
+    return { quote: m.quote, fees: m.fees, contracts: m.contracts, markets: m.markets.map(x => ({ sym: x.sym, kind: x.kind, tag: x.tag || undefined, token: x.token, perp: x.perp || null })) };
   }));
 
   server.registerTool("privo_prices", { title: "Get prices", annotations: RO,

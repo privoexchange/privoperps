@@ -3,7 +3,9 @@
 // call, and back the same way. A throwaway key buys 20 and 100 USDG of PRIVO, approves it to Permit2 and sells everything back,
 // all in one eth_simulateV1 block with transfer tracing (native ETH included): the tokens arrive exactly as quoted, the PRIVO
 // fee reaches the fee Safe on both legs, the slippage floors hold, the router keeps nothing, and the Pons hook keeps 3%.
-//   node test/sim/privo-token-test.mjs        (PRIVO_RPC=<rpc with eth_simulateV1> to use another RPC)
+//   node test/sim/privo-token-test.mjs      (PRIVO_RPC=<rpc with eth_simulateV1> to use another RPC)
+//   node test/sim/privo-token-test.mjs HEY TEXEL HEPH  the same checks for other Pons-launched tokens (best route: their Pons
+//                                                    pool through ETH, or a plain USDG pool where one is listed and better)
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { encodeFunctionData, parseAbi, pad, toHex, parseUnits, formatUnits, keccak256, encodeAbiParameters } from "viem";
 import { CONFIG, ADDR, USDG, MARKETS, makeClient, quote, buildSwap, permitTypedData, portion, splitBasket, routeLabel, midPrice } from "../../src/privo-swap.js";
@@ -32,16 +34,19 @@ const alwSlot = await guessSlot(USDG.address, encodeFunctionData({ abi: erc, fun
 const call = (to, data) => ({ from: acct.address, to, data, gas: toHex(3_000_000n) });
 const flows = logs => logs.filter(l => l.topics[0] === TRANSFER && l.topics.length === 3).map(l => ({ tok: l.address.toLowerCase(), from: "0x" + l.topics[1].slice(26), to: "0x" + l.topics[2].slice(26), v: BigInt(l.data) }));
 const me = acct.address.toLowerCase(), router = ADDR.ROUTER.toLowerCase(), usdg = USDG.address.toLowerCase(), fw = CONFIG.FEE_WALLET.toLowerCase();
-const m = MARKETS.PRIVO, tok = m.address.toLowerCase();
+const SYMS = process.argv.slice(2).length ? process.argv.slice(2) : ["PRIVO"];
 const routerLeft = fs => { const left = {}; for (const t of fs) { if (t.to === router) left[t.tok] = (left[t.tok] || 0n) + t.v; if (t.from === router) left[t.tok] = (left[t.tok] || 0n) - t.v; } return left; };
 
+for (const SYM of SYMS) {
+const m = MARKETS[SYM], tok = m.address.toLowerCase();
+console.log(SYM + ":");
 for (const human of ["20", "100"]) {
   const amount = parseUnits(human, 6);
   const ov = { [USDG.address]: { stateDiff: { [balSlot]: pad(toHex(amount)), [alwSlot]: pad(toHex((1n << 256n) - 1n)) } }, [acct.address]: { balance: toHex(10n ** 17n) } };
   // one pinned block for both simulations: the pool trades often, so the second run must see the same state as the first
   const blk = toHex(await c.getBlockNumber());
   const sim = calls => c.request({ method: "eth_simulateV1", params: [{ blockStateCalls: [{ stateOverrides: ov, calls }], traceTransfers: true, validation: false }, blk] }).then(r => r[0].calls);
-  const qb = await quote(c, { sym: "PRIVO", side: "buy", amount });
+  const qb = await quote(c, { sym: SYM, side: "buy", amount });
   const p1 = permitTypedData({ token: USDG.address, amount, nonce: 0 });
   const buy = buildSwap(qb, { slippageBps: 50, permit: { message: p1.message, signature: await acct.signTypedData(p1) } });
   const [b] = await sim([call(buy.to, buy.data)]);
@@ -51,11 +56,11 @@ for (const human of ["20", "100"]) {
   const leftB = routerLeft(fb);
   const drift = Math.abs(Number(got - qb.netOut)) / Number(qb.netOut); // the quote reads the newest block, which may be one later
   check(drift < 0.002 && got >= buy.minOut && feeBuy === qb.fee && Object.values(leftB).every(v => v === 0n),
-    `${human} USDG -> ${Number(formatUnits(got, 18)).toLocaleString("en-US")} PRIVO, ${drift === 0 ? "exactly as quoted" : "within " + (drift * 100).toFixed(3) + "% of the quote (a newer block)"} (${routeLabel(qb.pool)}); fee ${formatUnits(feeBuy, 6)} USDG to the Safe; router keeps nothing (USDG, WETH, ETH, PRIVO)`);
+    `${human} USDG -> ${Number(formatUnits(got, 18)).toLocaleString("en-US")} ${SYM}, ${drift === 0 ? "exactly as quoted" : "within " + (drift * 100).toFixed(3) + "% of the quote (a newer block)"} (${routeLabel(qb.pool)}); fee ${formatUnits(feeBuy, 6)} USDG to the Safe; router keeps nothing (USDG, WETH, ETH, ${SYM})`);
   const rc = { status: "success", logs: b.logs.map(l => ({ ...l })) };
-  const je = fromReceipt(rc, acct.address, "PRIVO", { ts: 1 });
-  check(je && je.side === "buy" && Math.abs(je.qty - Number(formatUnits(got, 18))) < 1e-6 && Math.abs(je.usdg - Number(human)) < 1e-6, "the journal books it as a PRIVO buy for " + human + " USDG");
-  const qs = await quote(c, { sym: "PRIVO", side: "sell", amount: got });
+  const je = fromReceipt(rc, acct.address, SYM, { ts: 1 });
+  check(je && je.side === "buy" && Math.abs(je.qty - Number(formatUnits(got, 18))) < 1e-6 && Math.abs(je.usdg - Number(human)) < 1e-6, "the journal books it as a " + SYM + " buy for " + human + " USDG");
+  const qs = await quote(c, { sym: SYM, side: "sell", amount: got });
   const p2 = permitTypedData({ token: m.address, amount: got, nonce: 0 });
   const sell = buildSwap(qs, { slippageBps: 50, permit: { message: p2.message, signature: await acct.signTypedData(p2) } });
   const calls = await sim([call(buy.to, buy.data), call(m.address, encodeFunctionData({ abi: erc, functionName: "approve", args: [ADDR.PERMIT2, (1n << 256n) - 1n] })), call(sell.to, sell.data)]);
@@ -70,15 +75,18 @@ for (const human of ["20", "100"]) {
   console.log(`        round trip: ${human} USDG -> ${formatUnits(back, 6)} USDG (${((1 - Number(back) / Number(amount)) * 100).toFixed(2)}% kept by fees and the two pools)`);
 }
 
-check(!orderMarket("PRIVO"), "PRIVO is not taken by limit or TWAP orders");
-let refused = false; try { splitBasket([{ sym: "PRIVO", w: 5000 }, { sym: "TSLA", w: 5000 }], 10n ** 8n); } catch { refused = true; }
-check(refused, "PRIVO is not taken in baskets");
+check(!orderMarket(SYM), SYM + " is not taken by limit or TWAP orders");
+let refused = false; try { splitBasket([{ sym: SYM, w: 5000 }, { sym: "TSLA", w: 5000 }], 10n ** 8n); } catch { refused = true; }
+check(refused, SYM + " is not taken in baskets");
 // what a buy pays above the pool's own price: the Pons hook's 3%, the ETH pool fee and the PRIVO fee
 {
-  const mid = await midPrice(c, "PRIVO");
-  const q = await quote(c, { sym: "PRIVO", side: "buy", amount: parseUnits("1", 6) });
-  const paid = 1 / Number(formatUnits(q.grossOut, 18));
-  check(mid > 0 && paid / mid > 1.025 && paid / mid < 1.045, `live mid ${mid.toExponential(4)} USDG per PRIVO; a 1 USDG buy pays ${((paid / mid - 1) * 100).toFixed(2)}% above it (Pons 3% plus the ETH pool fee and the 0.15% PRIVO fee)`);
+  const q = await quote(c, { sym: SYM, side: "buy", amount: parseUnits("1", 6) });
+  if (q.pool.hop === "ETH") {
+    const mid = await midPrice(c, SYM);
+    const paid = 1 / Number(formatUnits(q.grossOut, 18));
+    check(mid > 0 && paid / mid > 1.025 && paid / mid < 1.045, `live mid ${mid.toExponential(4)} USDG per ${SYM}; a 1 USDG buy pays ${((paid / mid - 1) * 100).toFixed(2)}% above it (Pons 3% plus the ETH pool fee and the 0.15% PRIVO fee)`);
+  } else console.log(`        a 1 USDG buy routes through ${routeLabel(q.pool)}, not the Pons pool`);
+}
 }
 
 console.log(bad ? `\n${bad} failed` : "\nall checks passed");

@@ -42,7 +42,7 @@ const sim = calls => c.request({ method: "eth_simulateV1", params: [{ blockState
 const flows = logs => logs.filter(l => l.topics[0] === TRANSFER).map(l => ({ tok: l.address.toLowerCase(), from: "0x" + l.topics[1].slice(26), to: "0x" + l.topics[2].slice(26), v: BigInt(l.data) }));
 const me = acct.address.toLowerCase(), router = ADDR.ROUTER.toLowerCase(), usdg = USDG.address.toLowerCase(), fw = CONFIG.FEE_WALLET.toLowerCase();
 
-for (const sym of ["PONS", "CASHCAT", "ORBIO"]) { // AI delisted 27 Nov 2026 (pool liquidity withdrawn)
+for (const sym of ["PONS", "ORBIO"]) { // AI delisted 27 Nov 2026 and CASHCAT 28 Nov 2026 (pool liquidity withdrawn); PONS and ORBIO moved to the Pons-listed tokens 28 Nov 2026
   const m = MARKETS[sym], tok = m.address.toLowerCase();
   const qb = await quote(c, { sym, side: "buy", amount });
   const p1 = permitTypedData({ token: USDG.address, amount, nonce: 0 });
@@ -51,7 +51,8 @@ for (const sym of ["PONS", "CASHCAT", "ORBIO"]) { // AI delisted 27 Nov 2026 (po
   if (b.status !== "0x1") { check(false, sym + " buy reverted: " + (b.error?.message || "")); continue; }
   const fb = flows(b.logs), got = fb.filter(t => t.tok === tok && t.to === me).reduce((a, t) => a + t.v, 0n);
   const feeBuy = fb.filter(t => t.tok === usdg && t.to === fw).reduce((a, t) => a + t.v, 0n);
-  check(got === qb.netOut && got >= buy.minOut && feeBuy === qb.fee, `${sym} buy: 50 USDG -> ${formatUnits(got, 18)} tokens, exactly as quoted (no transfer tax); fee ${formatUnits(feeBuy, 6)} USDG to the Safe`);
+  const drift = Math.abs(Number(got - qb.netOut)) / Number(qb.netOut); // the simulation reads "latest", which may be a newer block than the quote
+  check(drift < 0.002 && got >= buy.minOut && feeBuy === qb.fee, `${sym} buy: 50 USDG -> ${formatUnits(got, 18)} tokens, ${drift === 0 ? "exactly as quoted" : "within " + (drift * 100).toFixed(3) + "% of the quote (a newer block)"} (no transfer tax); fee ${formatUnits(feeBuy, 6)} USDG to the Safe`);
   const qs = await quote(c, { sym, side: "sell", amount: got });
   const p2 = permitTypedData({ token: m.address, amount: got, nonce: 0 });
   const sell = buildSwap(qs, { slippageBps: 50, permit: { message: p2.message, signature: await acct.signTypedData(p2) } });
@@ -65,7 +66,7 @@ for (const sym of ["PONS", "CASHCAT", "ORBIO"]) { // AI delisted 27 Nov 2026 (po
   check(back >= sell.minOut && feeSell === portion(back + feeSell, qs.bips) && Object.values(left).every(v => v === 0n) && fs2.some(t => t.tok === tok && t.from === me && t.v === got),
     `${sym} sell: all ${formatUnits(got, 18)} back -> ${formatUnits(back, 6)} USDG (floor ${formatUnits(sell.minOut, 6)}); fee ${formatUnits(feeSell, 6)} USDG; router keeps nothing`);
 }
-check(["PONS", "CASHCAT", "ORBIO", "AI"].every(s => !orderMarket(s)), "memecoins are not taken by limit or TWAP orders");
+check(["PONS", "ORBIO", "HEY", "TEXEL", "HEPH", "CASHCAT", "AI"].every(s => !orderMarket(s)), "project tokens and memecoins are not taken by limit or TWAP orders");
 let refused = false; try { splitBasket([{ sym: "PONS", w: 5000 }, { sym: "TSLA", w: 5000 }], 10n ** 8n); } catch { refused = true; }
 check(refused, "memecoins are not taken in baskets");
 

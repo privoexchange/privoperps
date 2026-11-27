@@ -25,7 +25,7 @@ export const BASKET_THEMES = [
 const live = s => !!MARKETS[s] && !MARKETS[s].delisted;
 const isStock = s => live(s) && MARKETS[s].kind === "stock" && !MARKETS[s].native;
 // Short tickers that are also everyday words: only taken when typed in capitals or with a $ in front.
-const SHY = new Set(["F", "NU", "BA", "NET", "ON", "IT", "AI"]);
+const SHY = new Set(["F", "NU", "BA", "NET", "ON", "IT", "AI", "HEY"]); // tickers that are also everyday words: only $HEY or HEY
 const num = s => parseFloat(String(s).replace(",", "."));
 
 /* ---------- checking an intent ---------- */

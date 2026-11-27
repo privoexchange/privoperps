@@ -54,5 +54,14 @@ check(same(extractJson('Sure! ```json\n{"type":"open","sym":"NVDA","note":"a } i
 check(extractJson("no json here") === null, "no JSON -> null");
 check(systemPrompt().includes("TSLA") && !/\bAI\b(?! =)/.test(systemPrompt().split("Crypto")[1] || "") && BASKET_THEMES.every(([, s]) => s.length >= 3), "prompt lists live markets (not the delisted AI) and the themes");
 
+// project tokens (28 Nov 2026)
+{
+  const sym = t => parse(t)?.intent?.sym;
+  check(sym("hey, buy 10 TSLA") === "TSLA" && sym("Hey buy $20 of nvda") === "NVDA", "a greeting \"hey\" is not the HEY token");
+  check(sym("buy 20 dollars of HEY") === "HEY" && sym("buy $15 $hey") === "HEY", "HEY in capitals or as $hey is the token");
+  check(sym("sell all texel") === "TEXEL" && sym("buy 10 heph") === "HEPH" && sym("buy 25 usdg of pons") === "PONS" && sym("buy 5 orbio") === "ORBIO", "TEXEL, HEPH, PONS and ORBIO by ticker");
+  check(!parse("buy 10 cashcat")?.intent, "CASHCAT (delisted) is not offered");
+}
+
 console.log(bad ? `\n${bad} failed` : "\nall checks passed");
 process.exit(bad ? 1 : 0);
