@@ -113,7 +113,7 @@ export const MARKETS = {
   // Added 27 Nov 2026: memecoins launched on Pons, each with a large Uniswap v4 USDG pool without hooks (fee 0, tick spacing 1,
   // key read from the PoolManager's Initialize event). Where another token uses the same name, this is the one with the big pool.
   // Spot only: baskets, limit and TWAP orders take stock tokens only.
-  // tag: the label shown next to the symbol (LAUNCHPAD, TOOLS); meme: tagged MEME. All are spot only.
+  // tag: the label shown next to the symbol, from how each project describes itself (LAUNCHPAD, RESEARCH, GPU CLOUD, PHYSICAL AI, AI); meme: tagged MEME. All are spot only.
   // PONS since 28 Nov 2026 is the Pons launchpad's own token (0x39dB…4571, the one ponsfamily.com links). The PONS listed on
   // 27 Nov (0x8725…d9b0) was another token with the same name; its pool's liquidity was withdrawn. Pools: Uniswap v4 USDG 0.3%
   // (no hook) and v3 WETH 1% and 0.3% (USDG -> WETH on the 0.01% pool first).
@@ -129,7 +129,7 @@ export const MARKETS = {
   // ORBIO since 28 Nov 2026 is orbio.so's token launched on Pons (0xAa07…28A3, listed by ponsfamily.com); the ORBIO listed on
   // 27 Nov (0x7c63…4F25) was another token with the same name whose pool's liquidity was withdrawn. Pool: Uniswap v4 USDG
   // 0.8% (no hook; key matched to the pool id).
-  ORBIO:   { kind: "crypto", tag: "TOOLS", name: "orbio.so", address: "0xAa07A0e9209e16aC99708C3EC70159c6eF3128A3", pools: [{ v: 4, fee: 8000, ts: 80, id: "0xea9f200e13055b82f175f44f592c4c13dd8c9d9320a66487d3c5cd90d68550ef" }] },
+  ORBIO:   { kind: "crypto", tag: "AI", name: "orbio.so", address: "0xAa07A0e9209e16aC99708C3EC70159c6eF3128A3", pools: [{ v: 4, fee: 8000, ts: 80, id: "0xea9f200e13055b82f175f44f592c4c13dd8c9d9320a66487d3c5cd90d68550ef" }] },
   // Added 26 Nov 2026: $PRIVO itself. Its only pool is the Pons launch pool, Uniswap v4 against native ETH (fee 0, tick spacing
   // 200, key from the PoolManager's Initialize event) with the Pons hook, which keeps 3% of every swap in either direction
   // (measured against the pool's own price; the same on Uniswap's app). hop: "ETH" routes USDG -> ETH on the ETH market's best
@@ -139,11 +139,11 @@ export const MARKETS = {
   // (Uniswap v4 against native ETH, fee 0, tick spacing 200, the Pons hook keeping 3% per swap; keys from the PoolManager's
   // Initialize event), reached through ETH. TEXEL also has a hookless USDG pool (fee 1.5%) that is usually cheaper; quotes
   // take whichever pays more. Spot only.
-  HEY:     { kind: "crypto", tag: "TOOLS", name: "Hey Research Lab", note: "$HEY trades on its Pons launch pool against ETH. That pool keeps 3% of every swap, on top of the 0.15% PRIVO fee, so buying and selling back costs about 6%.", address: "0xB33eb16782776b4D738c0Fd643577cb0284Db610", pools: [{ v: 4, hop: "ETH", fee: 0, ts: 200, hooks: "0xE5e702641Ea86F4ae6cC3cDaeD2B886f976Be044", hookFeeBps: 300, id: "0x1f0da4872bea85b2f95064d1c89671a5e578d114c375597d23962a0579771d16" }] },
-  TEXEL:   { kind: "crypto", tag: "TOOLS", name: "Texel", note: "$TEXEL trades on a Uniswap USDG pool (1.5% pool fee) or its Pons launch pool against ETH (3% per swap), whichever pays more, plus the 0.15% PRIVO fee.", address: "0x0DdCAb9ae04bDA0c87eCC1640636FA11e8e613E8", pools: [
+  HEY:     { kind: "crypto", tag: "RESEARCH", name: "Hey Research Lab", note: "$HEY trades on its Pons launch pool against ETH. That pool keeps 3% of every swap, on top of the 0.15% PRIVO fee, so buying and selling back costs about 6%.", address: "0xB33eb16782776b4D738c0Fd643577cb0284Db610", pools: [{ v: 4, hop: "ETH", fee: 0, ts: 200, hooks: "0xE5e702641Ea86F4ae6cC3cDaeD2B886f976Be044", hookFeeBps: 300, id: "0x1f0da4872bea85b2f95064d1c89671a5e578d114c375597d23962a0579771d16" }] },
+  TEXEL:   { kind: "crypto", tag: "GPU CLOUD", name: "Texel", note: "$TEXEL trades on a Uniswap USDG pool (1.5% pool fee) or its Pons launch pool against ETH (3% per swap), whichever pays more, plus the 0.15% PRIVO fee.", address: "0x0DdCAb9ae04bDA0c87eCC1640636FA11e8e613E8", pools: [
     { v: 4, fee: 15000, ts: 150, id: "0x9b1788a972dfdcad0a65a165549eb71d223247b1f20298b4040667494711d688" },
     { v: 4, hop: "ETH", fee: 0, ts: 200, hooks: "0xE5e702641Ea86F4ae6cC3cDaeD2B886f976Be044", hookFeeBps: 300, id: "0x5e73f5892ef5cf4d553fe0cc9b109e884c3c2a52635bf6c4f1dceff9637fe932" }] },
-  HEPH:    { kind: "crypto", tag: "TOOLS", name: "HEPH AI", note: "$HEPH trades on its Pons launch pool against ETH. That pool keeps 3% of every swap, on top of the 0.15% PRIVO fee, so buying and selling back costs about 6%.", address: "0x3B6E95B2eD4976F54Cdf551468D9c8f1E132e9a4", pools: [{ v: 4, hop: "ETH", fee: 0, ts: 200, hooks: "0xE5e702641Ea86F4ae6cC3cDaeD2B886f976Be044", hookFeeBps: 300, id: "0x14b27aaf5d38a4d3abcba7ce4055106cdc74aee52b95e678adf5fdc9cf6fc2f0" }] },
+  HEPH:    { kind: "crypto", tag: "PHYSICAL AI", name: "HEPH AI", note: "$HEPH trades on its Pons launch pool against ETH. That pool keeps 3% of every swap, on top of the 0.15% PRIVO fee, so buying and selling back costs about 6%.", address: "0x3B6E95B2eD4976F54Cdf551468D9c8f1E132e9a4", pools: [{ v: 4, hop: "ETH", fee: 0, ts: 200, hooks: "0xE5e702641Ea86F4ae6cC3cDaeD2B886f976Be044", hookFeeBps: 300, id: "0x14b27aaf5d38a4d3abcba7ce4055106cdc74aee52b95e678adf5fdc9cf6fc2f0" }] },
   ETH:  { kind: "crypto", native: true, address: WETH, pools: [
     { v: 3, fee: 100, id: "0x52e65B17fB6E5BA00Ed806f37Afcd2DaA50271Ca" },
     { v: 3, fee: 500, id: "0x69BfaF19C9f377BB306a89aEd9F6B07e2c1a8d9a" },
