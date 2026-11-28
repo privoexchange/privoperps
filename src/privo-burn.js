@@ -43,7 +43,7 @@ export async function planBurn(client, { usdgIn = 0n, privoHeld = 0n, slippageBp
   if (usdgIn === 0n && privoHeld === 0n) throw new Error("Nothing to burn: the Safe holds no USDG or $PRIVO");
   const deadline = BigInt(Math.floor(now / 1000) + ttlSec);
   if (usdgIn === 0n) return { usdgIn, privoHeld, expected: 0n, minOut: 0n, route: null, deadline, slippageBps };
-  const q = await quote(client, { sym: SYM, side: "buy", amount: usdgIn, fee: false });
+  const q = await quote(client, { sym: SYM, side: "buy", amount: usdgIn, fee: false, every: false });
   if (q.bips !== 0n || q.fee !== 0n) throw new Error("A buyback must not pay the PRIVO fee");
   return { usdgIn, privoHeld, expected: q.grossOut, minOut: applySlippage(q.grossOut, slippageBps), route: routeOf(q.pool), deadline, slippageBps };
 }

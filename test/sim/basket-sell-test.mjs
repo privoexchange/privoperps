@@ -52,8 +52,11 @@ async function buyThenSell(syms, human, { share = 1n, slip = 50, inflate = null 
   const td = permitTypedData({ token: USDG.address, amount, nonce: 0 });
   const buy = buildBasket(qb, { slippageBps: 100, permit: { message: td.message, signature: await acct.signTypedData(td) } });
   const ov = Object.fromEntries(Object.entries(await overrides(amount)));
+  // Both simulations run on the same block: a route through ETH uses the busy USDG/WETH pool, so on a later block the
+  // buy can return slightly fewer tokens than the first pass saw, and selling that amount would fail for the test only.
+  const block = toHex(await c.getBlockNumber());
   // first pass: the buy alone, to learn what the trader got
-  const r1 = await c.request({ method: "eth_simulateV1", params: [{ blockStateCalls: [{ stateOverrides: ov, calls: [call(buy.to, buy.data)] }], traceTransfers: true, validation: false }, "latest"] });
+  const r1 = await c.request({ method: "eth_simulateV1", params: [{ blockStateCalls: [{ stateOverrides: ov, calls: [call(buy.to, buy.data)] }], traceTransfers: true, validation: false }, block] });
   if (r1[0].calls[0].status !== "0x1") return { ok: false, err: "buy: " + (r1[0].calls[0].error?.message || "reverted") };
   const me = acct.address.toLowerCase(), got = {};
   for (const t of transfers(r1[0].calls[0].logs)) if (t.to === me) got[t.tok] = (got[t.tok] || 0n) + t.v;
@@ -63,7 +66,7 @@ async function buyThenSell(syms, human, { share = 1n, slip = 50, inflate = null 
   const bt = permitBatchTypedData({ items: qs.legs.map(l => ({ token: MARKETS[l.sym].address, amount: l.amount, nonce: 0 })) });
   const sell = buildBasketSell(qs, { slippageBps: slip, permit: { message: bt.message, signature: await acct.signTypedData(bt) } });
   const approvals = syms.map(s => call(MARKETS[s].address, encodeFunctionData({ abi: erc, functionName: "approve", args: [ADDR.PERMIT2, (1n << 256n) - 1n] })));
-  const r = await c.request({ method: "eth_simulateV1", params: [{ blockStateCalls: [{ stateOverrides: ov, calls: [call(buy.to, buy.data), ...approvals, call(sell.to, sell.data)] }], traceTransfers: true, validation: false }, "latest"] });
+  const r = await c.request({ method: "eth_simulateV1", params: [{ blockStateCalls: [{ stateOverrides: ov, calls: [call(buy.to, buy.data), ...approvals, call(sell.to, sell.data)] }], traceTransfers: true, validation: false }, block] });
   const sc = r[0].calls.at(-1);
   if (sc.status !== "0x1") return { ok: false, qs, sell, err: sc.error?.message || "reverted" };
   const router = ADDR.ROUTER.toLowerCase(), usdg = USDG.address.toLowerCase(), fw = CONFIG.FEE_WALLET.toLowerCase();

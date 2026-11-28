@@ -177,9 +177,13 @@ function v3Swaps(sym, pool, buy, recipient, minOut) {
     return enc(["address", "uint256", "uint256", "bytes", "bool"], [last ? recipient : ADDRESS_THIS, CONTRACT_BALANCE, last ? minOut : 0n, encodePacked(["address", "uint24", "address"], [t[i], fee, t[i + 1]]), false]);
   });
 }
+export const PONS_HOOK = "0xE5e702641Ea86F4ae6cC3cDaeD2B886f976Be044";
+const pct = f => (f / 10000).toFixed(2) + "%";
 export const routeLabel = pool => pool.hop === "ETH"
-  ? "via ETH" + (pool.eth ? " (pool fee " + ((pool.eth.fees || [pool.eth.fee]).map(f => (f / 10000).toFixed(2) + "%").join(" + ")) + ")" : "") + ", Pons pool fee " + ((pool.hookFeeBps || 0) / 100).toFixed(2) + "%"
-  : (pool.via?.length ? "via ETH, " : "") + "pool fee " + (pool.fees || [pool.fee]).map(f => (f / 10000).toFixed(2) + "%").join(" + ");
+  ? "via ETH" + (pool.eth ? " (pool fee " + ((pool.eth.fees || [pool.eth.fee]).map(pct).join(" + ")) + ")" : "") + (pool.hookFeeBps ? ", Pons pool fee " + (pool.hookFeeBps / 100).toFixed(2) + "%" : ", pool fee " + pct(pool.fee))
+  : (pool.via?.length ? "via ETH, " : "") + "pool fee " + (pool.fees || [pool.fee]).map(pct).join(" + ");
+// Where a route trades: "Pons pool" for a Pons launch pool, otherwise the Uniswap version.
+export const venueLabel = pool => (pool.hooks || "").toLowerCase() === PONS_HOOK.toLowerCase() ? "Pons pool" : "Uniswap v" + pool.v;
 
 /* ---------- helpers ---------- */
 const MSG_SENDER = "0x0000000000000000000000000000000000000001";
@@ -229,9 +233,8 @@ async function quotePool(client, stock, pool, tokenIn, tokenOut, amountIn, sym, 
   return result[0];
 }
 
-// Quotes every known pool of a market for swapIn and returns the one that pays most: { best: { pool, out }, all }.
-// A pool reached through ETH (hop: "ETH"): USDG <-> ETH on the ETH market's best pool, then ETH <-> the token on this v4 pool.
-// Returns { pool: { ...pool, eth: the ETH pool used, ethAmount }, out }.
+// One route reached through ETH (hop: "ETH"): USDG <-> ETH on the ETH market's best route, then ETH <-> the token on this v4
+// pool. Returns { pool: { ...pool, eth: the ETH pool used, ethAmount }, out }. Used by midPrice.
 async function quoteViaEth(client, sym, pool, buy, amountIn) {
   const m = MARKETS[sym];
   if (buy) {
@@ -243,21 +246,87 @@ async function quoteViaEth(client, sym, pool, buy, amountIn) {
   const e = await bestPool(client, "ETH", false, ethOut);
   return { pool: { ...pool, eth: e.best.pool, ethAmount: ethOut }, out: e.best.out };
 }
-async function bestPool(client, sym, buy, swapIn) {
+
+/* ---------- every route ---------- */
+// Besides the pools listed for a market, every quote also tries each standard Uniswap route for the exact amount:
+// v3 USDG pools at every fee tier, v3 through WETH (USDG/WETH 0.01% or 0.05%, then every tier), v4 USDG pools without
+// hooks at the common fee and tick-spacing pairs and, for crypto tokens, v4 pools against native ETH without hooks.
+// Routes with no pool fail to quote and are left out; the one that pays the trader most fills. Only canonical Uniswap
+// pools and v4 pools without hooks are added, so no added route runs hook code PRIVO has not read.
+const V3_TIERS = [100, 500, 3000, 10000];
+const V4_PAIRS = [[0, 1], [100, 1], [500, 10], [3000, 60], [10000, 200]];
+const sameRoute = (a, b) => a.v === b.v && (a.hop || "") === (b.hop || "") && String(a.fees || [a.fee]) === String(b.fees || [b.fee])
+  && String(a.via || []).toLowerCase() === String(b.via || []).toLowerCase() && (a.v === 3 || (a.ts === b.ts && (a.hooks || ZERO).toLowerCase() === (b.hooks || ZERO).toLowerCase()));
+const routeCache = {};
+export function routesOf(sym) {
+  if (routeCache[sym]) return routeCache[sym];
+  const m = MARKETS[sym], out = [...m.pools];
+  const add = p => { if (!out.some(q => sameRoute(q, p))) out.push({ ...p, auto: true, id: ["auto", p.v, p.hop || "", ...(p.fees || [p.fee]), p.ts ?? ""].join("-") }); };
+  for (const f of V3_TIERS) add({ v: 3, fee: f });
+  if (!m.native) {
+    for (const f0 of [100, 500]) for (const f of V3_TIERS) add({ v: 3, fees: [f0, f], via: [WETH] });
+    for (const [fee, ts] of V4_PAIRS) add({ v: 4, fee, ts });
+    if (m.kind === "crypto") for (const [fee, ts] of V4_PAIRS) add({ v: 4, hop: "ETH", fee, ts, hooks: ZERO });
+  }
+  return (routeCache[sym] = out);
+}
+function quoteCall(stock, pool, tokenIn, amountIn, sym, buy) {
+  if (pool.v === 3) return { address: ADDR.QUOTER_V3, abi: QV3, functionName: "quoteExactInput", args: [v3Path(sym, pool, buy), amountIn] };
+  const key = poolKey(stock, pool);
+  return { address: ADDR.QUOTER_V4, abi: QV4, functionName: "quoteExactInputSingle", args: [{ poolKey: key, zeroForOne: key.currency0.toLowerCase() === tokenIn.toLowerCase(), exactAmount: amountIn, hookData: "0x" }] };
+}
+// Many quotes through Multicall3, a few per eth_call: some quoter reverts on a missing pool burn the call's gas, and in
+// one large call that sinks every route. A group that fails as a whole is retried route by route.
+const QUOTE_GROUP = 3;
+async function quoteMany(client, calls) {
+  const one = r => r.status === "success" && r.result[0] > 0n ? { out: r.result[0] } : { out: null, error: "no pool for this route" };
+  const groups = [];
+  for (let i = 0; i < calls.length; i += QUOTE_GROUP) groups.push(calls.slice(i, i + QUOTE_GROUP));
+  const parts = await Promise.all(groups.map(async g => {
+    try {
+      const res = await client.multicall({ contracts: g, allowFailure: true, batchSize: 0 });
+      if (res.some(r => r.status === "success") || g.length === 1) return res.map(one);
+    } catch { /* retried below */ }
+    return Promise.all(g.map(c => client.simulateContract(c).then(r => one({ status: "success", result: r.result }), () => ({ out: null, error: "no pool for this route" }))));
+  }));
+  return parts.flat();
+}
+// Quotes every route of a market for swapIn and returns the one that pays most: { best: { pool, out }, all, checked }.
+// every: false quotes only the market's listed pools (the fee Safe's buyback, whose batch is rebuilt from a pool index).
+async function bestPool(client, sym, buy, swapIn, { every = true } = {}) {
   const m = MARKETS[sym];
-  const [tokenIn, tokenOut] = buy ? [USDG.address, m.address] : [m.address, USDG.address];
-  const tries = await Promise.allSettled(m.pools.map(p => p.hop === "ETH" ? quoteViaEth(client, sym, p, buy, swapIn)
-    : quotePool(client, m.address, p, tokenIn, tokenOut, swapIn, sym, buy).then(out => ({ pool: p, out }))));
-  const all = tries.map((t, i) => ({ pool: t.status === "fulfilled" ? t.value.pool : m.pools[i], out: t.status === "fulfilled" ? t.value.out : null, error: t.status === "rejected" ? (t.reason?.shortMessage || t.reason?.message) : null }));
+  const pools = every ? routesOf(sym) : m.pools;
+  const [tokenIn] = buy ? [USDG.address, m.address] : [m.address, USDG.address];
+  const direct = pools.filter(p => p.hop !== "ETH"), viaEth = pools.filter(p => p.hop === "ETH");
+  const res = new Map(), fail = (p, e) => res.set(p, { pool: p, out: null, error: e });
+  const directP = quoteMany(client, direct.map(p => quoteCall(m.address, p, tokenIn, swapIn, sym, buy)))
+    .then(r => r.forEach((x, i) => res.set(direct[i], { pool: direct[i], ...x })));
+  const ethP = !viaEth.length ? null : buy ? (async () => {
+    let e; try { e = await bestPool(client, "ETH", true, swapIn, { every }); } catch { viaEth.forEach(p => fail(p, "no ETH route for this size")); return; }
+    const r = await quoteMany(client, viaEth.map(p => quoteCall(m.address, p, ZERO, e.best.out, sym, true)));
+    r.forEach((x, i) => res.set(viaEth[i], { pool: { ...viaEth[i], eth: e.best.pool, ethAmount: e.best.out }, ...x }));
+  })() : (async () => {
+    const r = await quoteMany(client, viaEth.map(p => quoteCall(m.address, p, m.address, swapIn, sym, false)));
+    await Promise.all(r.map(async (x, i) => {
+      const p = viaEth[i];
+      if (!x.out) return fail(p, x.error);
+      try { const e = await bestPool(client, "ETH", false, x.out, { every }); res.set(p, { pool: { ...p, eth: e.best.pool, ethAmount: x.out }, out: e.best.out }); }
+      catch { fail(p, "no ETH route for this size"); }
+    }));
+  })();
+  await Promise.all([directP, ethP]);
+  const all = pools.map(p => res.get(p) || { pool: p, out: null, error: "not quoted" });
   const ok = all.filter(q => q.out && q.out > 0n).sort((a, b) => (b.out > a.out ? 1 : b.out < a.out ? -1 : 0));
   if (!ok.length) throw new Error("No pool can fill this size right now (" + sym + ")");
-  return { best: ok[0], all };
+  return { best: ok[0], all, checked: pools.length };
 }
 
 // side "buy": amount is USDG to spend (6 decimals). side "sell": amount of the asset to sell (its own decimals).
-// Every known pool is quoted and the one that pays the trader most wins.
+// Every route (routesOf) is quoted for this exact amount and the one that pays the trader most wins. all lists each
+// route with its output (null when it has no pool), so the ticket can show them side by side.
+// every: false quotes only the market's listed pools.
 // fee: false quotes without the PRIVO fee (used only by the fee Safe's own buyback, which pays no fee to itself).
-export async function quote(client, { sym, side, amount, fee: withFee = true }) {
+export async function quote(client, { sym, side, amount, fee: withFee = true, every = true }) {
   const m = MARKETS[sym];
   if (!m) throw new Error("No live market for " + sym);
   if (m.delisted) throw new Error(sym + " is no longer listed on PRIVO: its pool has no liquidity");
@@ -265,10 +334,10 @@ export async function quote(client, { sym, side, amount, fee: withFee = true }) 
   const bips = withFee ? feeBips() : 0n;
   const fee = side === "buy" ? portion(amount, bips) : 0n;
   const swapIn = amount - fee;
-  const { best, all } = await bestPool(client, sym, side === "buy", swapIn);
+  const { best, all, checked } = await bestPool(client, sym, side === "buy", swapIn, { every });
   const sellFee = side === "sell" ? portion(best.out, bips) : 0n;
   return { sym, side, amount, bips, pool: best.pool, swapIn, grossOut: best.out, fee: side === "buy" ? fee : sellFee,
-    netOut: side === "buy" ? best.out : best.out - sellFee, all };
+    netOut: side === "buy" ? best.out : best.out - sellFee, all, checked };
 }
 
 /* ---------- baskets: one USDG amount spread over several stock tokens, in one transaction ---------- */
