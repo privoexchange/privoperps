@@ -3,7 +3,7 @@
 // Flow tested in test/sim (eth_call with state overrides on mainnet state):
 //   buy  : [PERMIT2_PERMIT] PERMIT2_TRANSFER_FROM(USDG -> router) [PAY_PORTION fee] swap(router balance) -> trader
 //   sell : [PERMIT2_PERMIT] PERMIT2_TRANSFER_FROM(stock -> router) swap -> router [PAY_PORTION fee] SWEEP(USDG) -> trader
-import { createPublicClient, http, fallback, parseAbi, encodeAbiParameters, encodePacked, encodeFunctionData, concatHex, toHex } from "viem";
+import { createPublicClient, http, fallback, parseAbi, encodeAbiParameters, encodePacked, encodeFunctionData, concatHex, toHex, getAddress, keccak256 } from "viem";
 
 /* ---------- config ---------- */
 export const CONFIG = {
@@ -154,6 +154,27 @@ export const MARKETS = {
 };
 for (const m of Object.values(MARKETS)) { m.kind = m.kind || "stock"; m.decimals = m.decimals || 18; }
 export const STOCK_DECIMALS = 18;
+// The listed market (or pasted token) for a contract address, or null.
+export const marketByAddress = addr => Object.keys(MARKETS).find(k => !MARKETS[k].native && MARKETS[k].address.toLowerCase() === String(addr).toLowerCase()) || null;
+// A token pasted by its contract address that PRIVO does not list. It trades like a crypto market on every standard
+// Uniswap route (routesOf) plus its Pons launch pool when it has one (v4 against native ETH, fee 0, tick spacing 200,
+// the Pons hook); routes with no pool fail to quote and are left out. Nothing about the token is checked by PRIVO,
+// so the ticket asks the trader to confirm first. info: { address, symbol, name, decimals } read from the token itself.
+// taken(key): true when the app already uses that symbol. Returns the market key.
+export function addToken({ address, symbol, name, decimals }, taken = () => false) {
+  address = getAddress(address);
+  const have = marketByAddress(address); if (have) return have;
+  const d = Number(decimals);
+  if (!Number.isInteger(d) || d < 0 || d > 36) throw new Error("This contract does not report token decimals");
+  const base = String(symbol || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10) || "TOKEN";
+  let key = base;
+  if (MARKETS[key] || taken(key)) key = base + "-" + address.slice(2, 6).toUpperCase();
+  const clean = s => String(s || "").replace(/[^\p{L}\p{N} .,&()'_+-]/gu, "").trim().slice(0, 40);
+  MARKETS[key] = { kind: "crypto", custom: true, address, decimals: d, token: clean(symbol).slice(0, 16) || base, name: clean(name) || base,
+    note: "Not listed on PRIVO. Anyone can create a token, and PRIVO has not checked this one: its contract, supply or liquidity. A token can block selling or take a tax on each transfer. Check the contract address yourself before you trade.",
+    pools: [{ v: 4, hop: "ETH", fee: 0, ts: 200, hooks: PONS_HOOK, hookFeeBps: 300, id: keccak256(enc([KEY_T], [poolKey(address, { hop: "ETH", fee: 0, ts: 200, hooks: PONS_HOOK })])) }] };
+  return key;
+}
 export const decimalsOf = sym => MARKETS[sym]?.decimals ?? 18;
 export const isNative = sym => !!MARKETS[sym]?.native;
 // v3 path bytes for one route, from tokenIn to tokenOut.

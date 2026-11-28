@@ -59,7 +59,9 @@ async function getJson(url) {
 // GeckoTerminal returns up to 30 pools per request, so the pools go in batches. For each market the deepest pool wins.
 // Returns { SYM: { px, chg, vol, depth, pool } } with USD figures (USDG is treated as $1).
 export async function poolStats() {
-  const ids = Object.values(MARKETS).filter(m => !m.delisted).flatMap(m => m.pools.map(p => p.id)), batches = [];
+  // chart: the pool GeckoTerminal ranks deepest for a pasted token (used for its price and chart, not for routing).
+  const poolsOf = m => [...m.pools.map(p => p.id), ...(m.chart ? [m.chart] : [])];
+  const ids = [...new Set(Object.values(MARKETS).filter(m => !m.delisted).flatMap(poolsOf))], batches = [];
   for (let i = 0; i < ids.length; i += 25) batches.push(ids.slice(i, i + 25));
   // A failed batch only loses its own markets; the call fails only when every batch does.
   const settled = await Promise.allSettled(batches.map(b => getJson(GECKO + "/pools/multi/" + b.join(","))));
@@ -71,15 +73,28 @@ export async function poolStats() {
   const out = {};
   for (const [sym, m] of Object.entries(MARKETS)) {
     let best = null;
-    for (const p of m.pools) {
-      const a = byId.get(p.id.toLowerCase()); if (!a) continue;
+    for (const id of poolsOf(m)) {
+      const a = byId.get(id.toLowerCase()); if (!a) continue;
       const depth = +a.reserve_in_usd || 0;
       const isBase = a.base.toLowerCase().endsWith(m.address.toLowerCase());
-      if (!best || depth > best.depth) best = { px: +(isBase ? a.base_token_price_usd : a.quote_token_price_usd), chg: isBase ? +(a.price_change_percentage?.h24 ?? 0) : null, vol: +(a.volume_usd?.h24 ?? 0), depth, pool: p.id };
+      if (!best || depth > best.depth) best = { px: +(isBase ? a.base_token_price_usd : a.quote_token_price_usd), chg: isBase ? +(a.price_change_percentage?.h24 ?? 0) : null, vol: +(a.volume_usd?.h24 ?? 0), depth, pool: id };
     }
     if (best && best.px > 0) out[sym] = best;
   }
   return out;
+}
+
+// Pools of any token on Robinhood Chain, deepest first (GeckoTerminal), for a token pasted by its contract address.
+// Returns { pool, px, chg, vol, depth, image } for the deepest pool with liquidity, or null when GeckoTerminal has none.
+export async function tokenMarket(address) {
+  const j = await getJson(`${GECKO}/tokens/${address.toLowerCase()}/pools?page=1`);
+  const me = "robinhood_" + address.toLowerCase();
+  for (const d of j.data || []) {
+    const a = d.attributes, isBase = (d.relationships?.base_token?.data?.id || "").toLowerCase() === me;
+    const px = +(isBase ? a.base_token_price_usd : a.quote_token_price_usd), depth = +a.reserve_in_usd || 0;
+    if (px > 0 && depth > 0) return { pool: a.address, px, chg: isBase ? +(a.price_change_percentage?.h24 ?? 0) : 0, vol: +(a.volume_usd?.h24 ?? 0), depth };
+  }
+  return null;
 }
 
 // Candles for one pool, oldest first, as { t (unix s), o, h, l, c, v (USD) }.

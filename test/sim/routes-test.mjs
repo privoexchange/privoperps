@@ -5,7 +5,7 @@
 //   node tools/sim/routes-test.mjs
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { encodeFunctionData, parseAbi, pad, toHex, parseUnits } from "viem";
-import { ADDR, USDG, MARKETS, decimalsOf, isNative, routeLabel, venueLabel, routesOf, makeClient, quote, approvalState, permitTypedData, buildSwap } from "../../src/privo-swap.js";
+import { ADDR, USDG, MARKETS, decimalsOf, isNative, routeLabel, venueLabel, routesOf, makeClient, addToken, quote, approvalState, permitTypedData, buildSwap } from "../../src/privo-swap.js";
 
 const c = makeClient(["https://robinhood-rpc.publicnode.com"]);
 const acct = privateKeyToAccount(generatePrivateKey());
@@ -52,6 +52,17 @@ function forced(q, r) {
 
 const cases = [["TSLA", "buy", "200"], ["TSLA", "sell", "0.3"], ["NVDA", "buy", "200"], ["GLD", "sell", "0.5"], ["PONS", "buy", "30"], ["PONS", "sell", "200"],
   ["TEXEL", "buy", "30"], ["BTC", "buy", "200"], ["ETH", "buy", "200"], ["ETH", "sell", "0.05"], ["PRIVO", "buy", "10"]];
+// Tokens pasted by contract address (not listed on PRIVO), registered the way the app does it: name, symbol and decimals
+// read from the token. INDEX trades on Uniswap only; SCRPT has a Pons launch pool, found from its address alone.
+const meta = parseAbi(["function name() view returns (string)", "function symbol() view returns (string)", "function decimals() view returns (uint8)"]);
+const pasted = {};
+for (const a of ["0x56910d4409f3a0c78c64dd8d0545ff0705389870", "0x33e8a3e73bfeb324a40164730c3659827f2cd3e8"]) {
+  const [name, symbol, decimals] = await Promise.all(["name", "symbol", "decimals"].map(fn => c.readContract({ address: a, abi: meta, functionName: fn })));
+  pasted[a] = addToken({ address: a, symbol, name, decimals });
+}
+check(addToken({ address: MARKETS.HEY.address.toLowerCase(), symbol: "HEY", name: "x", decimals: 18 }) === "HEY", "pasting a listed token's address opens the listed market");
+const [pIndex, pScrpt] = Object.values(pasted);
+cases.push([pIndex, "buy", "10"], [pIndex, "sell", "1000"], [pScrpt, "buy", "10"], [pScrpt, "sell", "1000"]);
 const shapes = new Set();
 for (const [sym, side, human] of cases) {
   const q = await quote(c, { sym, side, amount: parseUnits(human, side === "buy" ? USDG.decimals : decimalsOf(sym)) });
