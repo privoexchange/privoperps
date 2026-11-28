@@ -33,6 +33,7 @@ This repository holds the smart contract, the wallet-free client libraries the a
 | [`src/privo-aipro-core.js`](src/privo-aipro-core.js) | PRIVO AI chat core: the answer-anything prompt with a live market snapshot, conversation history, reply parsing (up to 4 checked tickets), the 11 Pro models with their prices, and per-message payment math (USDG, or $PRIVO at 1.25x its pool sale value). |
 | [`src/privo-gift-core.js`](src/privo-gift-core.js) | Gift links: the `g1.` link format (key after "#"), funding transactions (gas first), the gas budget, and the sweep that sends every token and then the leftover ETH to the claimer. |
 | [`src/privo-x402.js`](src/privo-x402.js) | x402 payments on Robinhood Chain: the 402 terms, the EIP-3009 USDG authorization (domain "Global Dollar", version 1), the `X-PAYMENT` header, and `payFetch`, which pays one 402 within a price cap. Used by `privo.ai.ask()` and the MCP tool `privo_ai`. |
+| [`src/privo-burn.js`](src/privo-burn.js) | $PRIVO buyback & burn from the PRIVO fee Safe: one MultiSend batch (USDG to the router, swap swept to 0x…dEaD, held $PRIVO to 0x…dEaD), its decoder, and a byte-for-byte check against its parameters. |
 | [`mcp/privo-mcp.mjs`](mcp/privo-mcp.mjs) | MCP server (`privo-mcp`) so any MCP-capable AI agent can read PRIVO markets and trade with its own wallet, with a per-trade USDG limit. |
 | [`examples/`](examples) | Example bots, starting with a dip buyer. |
 | [`test/`](test) | Tests that run against mainnet state with `eth_call` and state overrides. They send no transactions. |
@@ -141,6 +142,8 @@ The Block desk was deployed with the standard CREATE2 deployer (`0x4e59…956C`)
 | Block desk | 0.10% of the USDG leg (`FEE_BIPS = 10`, a constant) | `PrivoBlockDesk.settle` |
 | Perps | Orderly's trading fees, including PRIVO's builder share; 1 USDG per withdrawal (Orderly) | Orderly |
 
+Fees paid to the PRIVO fee Safe (`0xCc051cf47547386bA147FDDfcBCFE00E791C1418`, 2 of 3) buy back $PRIVO and send it to the burn address `0x000000000000000000000000000000000000dEaD`. A buyback is one Safe transaction through MultiSendCallOnly 1.4.1: the Safe's USDG goes to the Universal Router, which buys $PRIVO on its Pons pool through ETH (no PRIVO fee) and sweeps it straight to the burn address with a minimum, and $PRIVO the Safe holds goes to the burn address in the same batch. [`src/privo-burn.js`](src/privo-burn.js) builds the batch and rebuilds it from its parameters so a second owner can check the bytes; `test/sim/burn-test.mjs` simulates it on mainnet state. Totals and every buyback: https://privoexchange.com/token and `GET https://privoexchange.com/api/v1/burn`.
+
 ## Run the tests
 
 Node 22 or newer (WebCrypto Ed25519).
@@ -158,6 +161,7 @@ node test/orders/orders-test.mjs       # PrivoOrders on mainnet state: limit buy
 node test/orders/deploy-test.mjs       # PrivoOrders bytecode on chain matches this build
 node test/sim/rebalance-test.mjs       # basket rebalances on mainnet state: lopsided baskets back to target, fee once, router keeps nothing, journal and positions
 node test/ai/x402-test.mjs             # x402: payment format, privo.ai.ask within its cap, and a live eth_call that USDG accepts the signature
+node test/sim/burn-test.mjs            # $PRIVO buyback: a 2-of-3 Safe batch simulated on mainnet state (eth_simulateV1), every token followed to the burn address
 node test/mcp/mcp-test.mjs             # MCP server over stdio: read tools, limits and refusals, and privo_buy / privo_basket_buy transactions simulated on mainnet state
 node test/sim/privo-token-test.mjs     # $PRIVO round trips through ETH on mainnet state: fee, floors, router keeps nothing, Pons 3%
 node test/sim/livetest.mjs             # spot swaps with the PRIVO fee for every market

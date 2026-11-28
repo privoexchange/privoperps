@@ -256,12 +256,13 @@ async function bestPool(client, sym, buy, swapIn) {
 
 // side "buy": amount is USDG to spend (6 decimals). side "sell": amount of the asset to sell (its own decimals).
 // Every known pool is quoted and the one that pays the trader most wins.
-export async function quote(client, { sym, side, amount }) {
+// fee: false quotes without the PRIVO fee (used only by the fee Safe's own buyback, which pays no fee to itself).
+export async function quote(client, { sym, side, amount, fee: withFee = true }) {
   const m = MARKETS[sym];
   if (!m) throw new Error("No live market for " + sym);
   if (m.delisted) throw new Error(sym + " is no longer listed on PRIVO: its pool has no liquidity");
   if (amount <= 0n) throw new Error("Enter an amount");
-  const bips = feeBips();
+  const bips = withFee ? feeBips() : 0n;
   const fee = side === "buy" ? portion(amount, bips) : 0n;
   const swapIn = amount - fee;
   const { best, all } = await bestPool(client, sym, side === "buy", swapIn);
@@ -640,6 +641,30 @@ export function fillRoute(q, { slippageBps = 50, floor = 0n } = {}) {
     cmds.push(CMD.V4_SWAP); inputs.push(v4Swap(stock, pool, buy ? usdgIs0 : !usdgIs0, minOut, buy ? USDG.address : stock, buy ? stock : USDG.address, false));
   }
   return { commands: bytes1(...cmds), inputs, minOut };
+}
+
+// Buy with USDG that is already in the router and send every bought token to `recipient` (the fee Safe's buyback
+// sends it to the burn address). The USDG arrives in the same transaction (the Safe's MultiSend transfers it first),
+// so there is no Permit2, no approval left behind and no PRIVO fee. Rebuilding with the same arguments gives the same
+// bytes, so a second Safe owner can check a signed batch. pool: a pool of MARKETS[sym] (for hop "ETH" with .eth set to
+// a v3 pool of MARKETS.ETH). deadline: unix seconds. Returns { to, value, data, minOut }.
+export function buyToRoute({ sym, pool, recipient, minOut, deadline }) {
+  const m = MARKETS[sym];
+  if (!m || m.native) throw new Error("No token market " + sym);
+  if (!(minOut > 0n)) throw new Error("A minimum output is required");
+  const token = m.address, cmds = [], inputs = [];
+  if (pool.hop === "ETH") {
+    if (pool.eth?.v !== 3) throw new Error("Unsupported route for " + sym);
+    for (const inp of v3Swaps("ETH", pool.eth, true, ADDRESS_THIS, 0n)) { cmds.push(CMD.V3_SWAP_EXACT_IN); inputs.push(inp); }
+    cmds.push(CMD.UNWRAP_WETH); inputs.push(enc(["address", "uint256"], [ADDRESS_THIS, 0n]));
+    cmds.push(CMD.V4_SWAP); inputs.push(v4Swap(token, pool, true, minOut, ZERO, token, true));
+  } else if (pool.v === 3) {
+    for (const inp of v3Swaps(sym, pool, true, ADDRESS_THIS, minOut)) { cmds.push(CMD.V3_SWAP_EXACT_IN); inputs.push(inp); }
+  } else {
+    cmds.push(CMD.V4_SWAP); inputs.push(v4Swap(token, pool, poolKey(token, pool).currency0 === USDG.address, minOut, USDG.address, token, true));
+  }
+  cmds.push(CMD.SWEEP); inputs.push(enc(["address", "address", "uint160"], [token, recipient, minOut]));
+  return { to: ADDR.ROUTER, value: 0n, minOut, data: encodeFunctionData({ abi: UR, functionName: "execute", args: [bytes1(...cmds), inputs, BigInt(deadline)] }) };
 }
 
 function finish(cmds, inputs, deadlineSec, minOut, value = 0n) {
