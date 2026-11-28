@@ -40,12 +40,15 @@ async function direct(url) {
 // In the browser, go through PRIVO's cached proxy (/api/market) first: one shared copy for every
 // visitor, no rate limits per phone, no cross-origin errors. Falls back to the source directly
 // (local preview without functions, or the proxy being down). In Node there is no proxy.
-let proxyOff = typeof location === "undefined" || !/^https?:$/.test(location.protocol);
+let proxyOff = typeof location === "undefined" || !/^https?:$/.test(location.protocol), proxyBase = "";
+// Server functions (e.g. /api/v1/prices) call this with their own origin to share the proxy's durable CDN cache
+// instead of hitting GeckoTerminal from Netlify's shared IPs, where requests are often rate limited.
+export function useProxy(origin) { proxyBase = origin; proxyOff = false; }
 async function getJson(url) {
   const src = url.startsWith(GECKO) ? ["gecko", GECKO] : url.startsWith(ORDERLY) ? ["orderly", ORDERLY] : null;
   if (src && !proxyOff) {
     try {
-      const r = await fetch("/api/market?src=" + src[0] + "&p=" + encodeURIComponent(url.slice(src[1].length)));
+      const r = await fetch(proxyBase + "/api/market?src=" + src[0] + "&p=" + encodeURIComponent(url.slice(src[1].length)), SERVER ? { signal: AbortSignal.timeout(9000) } : undefined);
       if (r.ok) return await r.json();
       if (r.status === 404) proxyOff = true; // no functions here (local preview)
     } catch { /* fall through to the source */ }
@@ -58,7 +61,10 @@ async function getJson(url) {
 export async function poolStats() {
   const ids = Object.values(MARKETS).filter(m => !m.delisted).flatMap(m => m.pools.map(p => p.id)), batches = [];
   for (let i = 0; i < ids.length; i += 25) batches.push(ids.slice(i, i + 25));
-  const parts = await Promise.all(batches.map(b => getJson(GECKO + "/pools/multi/" + b.join(","))));
+  // A failed batch only loses its own markets; the call fails only when every batch does.
+  const settled = await Promise.allSettled(batches.map(b => getJson(GECKO + "/pools/multi/" + b.join(","))));
+  const parts = settled.filter(s => s.status === "fulfilled").map(s => s.value);
+  if (!parts.length && settled.length) throw settled[0].reason;
   const j = { data: parts.flatMap(p => p.data || []) };
   // GeckoTerminal may list the asset as base or quote token (USDG/WETH lists USDG first), so pick the right side.
   const byId = new Map((j.data || []).map(d => [d.attributes.address.toLowerCase(), { ...d.attributes, base: d.relationships?.base_token?.data?.id || "" }]));
